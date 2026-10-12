@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Edit Overlay</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    /* область вебки на холсте OBS — её присылает бот в начале эдита */
+    #cam { position: absolute; transform-origin: 50% 50%; pointer-events: none; }
+    .pop { position: absolute; object-fit: contain; will-change: transform, opacity; }
+  </style>
+</head>
+<body>
+  <div id="cam"></div>
+  <script>
+    // Оверлей «эдита»: пока идёт эдит, на каждый бит выбрасывает 1–3 эмоута из чата прямо на вебку.
+    // Источник «Браузер» на весь холст OBS (обычно 1920×1080), поверх вебки. Эффекты самой вебки делает бот через OBS.
+    const cam = document.getElementById("cam");
+    let canvas = { w: 1920, h: 1080 };
+    let active = false;
+
+    function placeCam(rect) {
+      const k = window.innerWidth / canvas.w; // холст OBS → размер этой страницы
+      cam.style.width = rect.w * k + "px";
+      cam.style.height = rect.h * k + "px";
+      cam.style.left = (rect.cx - rect.w / 2) * k + "px";
+      cam.style.top = (rect.cy - rect.h / 2) * k + "px";
+      cam.style.transform = `rotate(${rect.rotation || 0}deg)`;
+    }
+
+    function popEmote(url, period, index) {
+      if (cam.childElementCount > 14) cam.firstElementChild.remove();
+      const w = cam.clientWidth, h = cam.clientHeight;
+      const size = Math.max(48, Math.min(w, h) * (0.22 + Math.random() * 0.12));
+      const img = document.createElement("img");
+      img.className = "pop";
+      img.src = url;
+      img.style.width = img.style.height = size + "px";
+      img.style.left = Math.random() * Math.max(0, w - size) + "px";
+      img.style.top = Math.random() * Math.max(0, h - size) + "px";
+      cam.appendChild(img);
+      const tilt = (Math.random() * 40 - 20).toFixed(1);
+      const life = Math.max(350, Math.min(900, period * 1.6));
+      img.animate([
+        { transform: `scale(0.2) rotate(${tilt}deg)`, opacity: 0 },
+        { transform: `scale(1.25) rotate(${tilt}deg)`, opacity: 1, offset: 0.15 },
+        { transform: `scale(1) rotate(${tilt}deg)`, opacity: 1, offset: 0.35 },
+        { transform: `scale(0.9) rotate(${tilt}deg)`, opacity: 0 },
+      ], { duration: life, delay: index * 40, easing: "ease-out", fill: "both" }).onfinish = () => img.remove();
+    }
+
+    function handle(data) {
+      if (data.type === "edit-start") {
+        canvas = data.canvas || canvas;
+        placeCam(data.rect);
+        active = true;
+      } else if (data.type === "edit-beat" && active) {
+        const n = 1 + Math.floor(Math.random() * Math.min(3, data.emotes.length));
+        for (let i = 0; i < n; i++) popEmote(data.emotes[i % data.emotes.length], data.period || 500, i);
+      } else if (data.type === "edit-end") {
+        active = false;
+        cam.replaceChildren();
+      }
+    }
+
+    let ws = null;
+    let lastPing = Date.now();
+    function connect() {
+      ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/edit`);
+      ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === "ping") { lastPing = Date.now(); return; }
+        handle(data);
+      };
+      ws.onclose = () => setTimeout(connect, 2000);
+    }
+    connect();
+    setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN && Date.now() - lastPing > 15000) ws.close();
+    }, 5000);
+  </script>
+</body>
+</html>

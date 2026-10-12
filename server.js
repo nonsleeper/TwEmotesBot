@@ -55,7 +55,21 @@ let config = {
   gameTextColor: "#FFFFFF",
   gameOutlineColor: "#000000",
   gameOutlineWidth: 2,
-  gameShadow: true
+  gameShadow: true,
+  editEnabled: false,
+  obsHost: "127.0.0.1",
+  obsPort: 4455,
+  obsPassword: "",
+  editCameraSource: "",
+  editAudioSource: "",
+  editCommand: "!edit",
+  editDuration: 30,
+  editCooldown: 120,
+  editWho: ["broadcaster", "moderator", "vip"],
+  editIntensity: 100,
+  editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
+  editEmotes: true,
+  editLatencyMs: 60
 };
 
 // Загрузка из bot-config.json если существует
@@ -278,8 +292,45 @@ app.post("/api/game/overlay", (req, res) => {
   res.json({ success: true });
 });
 
-app.post("/api/shutdown", (req, res) => {
+app.get("/api/edit/state", (req, res) => {
+  res.json({ success: true, ...edit.state() });
+});
+
+app.get("/api/edit/sources", async (req, res) => {
+  try {
+    res.json({ success: true, ...(await edit.sources()) });
+  } catch (err) {
+    res.status(502).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/edit/start", async (req, res) => {
+  try {
+    const duration = Number(req.body?.duration) || undefined;
+    res.json({ success: true, ...(await edit.start({ by: "панель", duration, force: true })) });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/edit/stop", async (req, res) => {
+  res.json({ success: true, ...(await edit.stop("остановлен из панели")) });
+});
+
+// Новые настройки эдита без перезапуска бота (присылает web-server.js при сохранении)
+app.post("/api/edit/config", (req, res) => {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  for (const [key, value] of Object.entries(body)) {
+    if (key.startsWith("edit") || key.startsWith("obs")) config[key] = value;
+  }
+  edit.applyConfig(config);
+  console.log("[EDIT] Settings updated");
+  res.json({ success: true });
+});
+
+app.post("/api/shutdown", async (req, res) => {
   console.log("[PROCESS] Shutdown requested via API");
+  await edit.shutdown(); // вернуть вебку на место, если эдит шёл
   savePlaytime();
   if (saveGreetingsTimeout) {
     clearTimeout(saveGreetingsTimeout);
@@ -302,6 +353,53 @@ const server = app.listen(PORT, "127.0.0.1", () => {
 const wssGreeting = new WebSocket.Server({ noServer: true });
 const wssEmotes = new WebSocket.Server({ noServer: true });
 const wssGame = new WebSocket.Server({ noServer: true });
+const wssEdit = new WebSocket.Server({ noServer: true });
+
+// ---- «Эдит» на вебке (edit.js): эффекты на источник камеры в OBS под бит + эмоуты на вебку (overlay/edit.html)
+const { EditController } = require("./edit");
+const recentEmotes = []; // { url, at } — эмоуты из чата за последние минуты, ими эдит «стреляет» на бит
+function rememberEmote(url) {
+  if (!url) return;
+  recentEmotes.push({ url, at: Date.now() });
+  while (recentEmotes.length > 200 || (recentEmotes.length && Date.now() - recentEmotes[0].at > 3 * 60 * 1000)) recentEmotes.shift();
+}
+function editEmotePool() {
+  const urls = [...new Set(recentEmotes.slice().reverse().map(e => e.url))];
+  const pool = urls.length ? urls : GREETING_EMOTE_CODES.map(code => greetingEmoteUrl(code)).filter(Boolean);
+  return pool.sort(() => Math.random() - 0.5);
+}
+function broadcastEdit(data) {
+  const payload = JSON.stringify(data);
+  for (const c of wssEdit.clients) if (c.readyState === WebSocket.OPEN) c.send(payload);
+}
+const edit = new EditController({
+  dataDir: path.join(__dirname, "cache"),
+  log: (msg) => console.log(msg),
+  overlay: broadcastEdit,
+  emotePool: () => editEmotePool(),
+});
+edit.applyConfig(config);
+let lastEditStart = null; // для подключившегося посреди эдита оверлея
+wssEdit.on("connection", (ws) => {
+  console.log("[WS] Edit overlay connected");
+  if (edit.session && lastEditStart) ws.send(JSON.stringify(lastEditStart));
+});
+const editOverlay = broadcastEdit;
+edit.overlay = (data) => {
+  if (data.type === "edit-start") lastEditStart = data;
+  editOverlay(data);
+};
+
+// Кто может запускать эдит командой: editWho = ["broadcaster", "moderator", "vip", "subscriber", "everyone"]
+function canTriggerEdit(tags) {
+  const who = new Set(Array.isArray(config.editWho) ? config.editWho : []);
+  const badges = tags.badges || {};
+  return who.has("everyone") ||
+    (who.has("broadcaster") && Boolean(badges.broadcaster)) ||
+    (who.has("moderator") && (tags.mod === true || Boolean(badges.moderator) || Boolean(badges.broadcaster))) ||
+    (who.has("vip") && (Boolean(badges.vip) || tags.vip === true)) ||
+    (who.has("subscriber") && (tags.subscriber === true || Boolean(badges.subscriber) || Boolean(badges.founder)));
+}
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
@@ -317,6 +415,10 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === '/ws/game') {
     wssGame.handleUpgrade(request, socket, head, (ws) => {
       wssGame.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws/edit') {
+    wssEdit.handleUpgrade(request, socket, head, (ws) => {
+      wssEdit.emit('connection', ws, request);
     });
   } else {
     socket.destroy();
@@ -370,6 +472,12 @@ setInterval(() => {
   }
 
   for (const client of wssGame.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+
+  for (const client of wssEdit.clients) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
@@ -1823,6 +1931,20 @@ client.on("message", async (channel, tags, message, self) => {
     const username = tags["display-name"] || tags.username || "unknown";
     console.log(`[CHAT] ${username}: ${message}`);
 
+    // команда эдита: "!edit" — запустить (повтор продлевает), "!edit stop" — остановить
+    const editCommand = String(config.editCommand || "").trim().toLowerCase();
+    const [firstWord, secondWord] = message.trim().toLowerCase().split(/\s+/);
+    if (config.editEnabled && editCommand && firstWord === editCommand) {
+      if (!canTriggerEdit(tags)) {
+        console.log(`[EDIT] ${username} has no rights for ${editCommand}`);
+      } else if (secondWord === "stop" || secondWord === "стоп") {
+        await edit.stop(`остановил ${username}`);
+      } else {
+        await edit.start({ by: username }).catch(err => console.log(`[EDIT] ${username}: ${err.message}`));
+      }
+      return;
+    }
+
     const words = normalizeWords(message);
     const wordsLower = words.map(w => w.toLowerCase());
     const rawTokens = message
@@ -1925,6 +2047,7 @@ client.on("message", async (channel, tags, message, self) => {
           }
 
           addUserEmotes(username, totalEmotesInMessage);
+          for (const info of foundEmotes.values()) rememberEmote(info.url);
         } else {
           const currentCount = getUserEmoteCount(username);
           console.log(`[SPAM] ${username} blocked: ${currentCount}/${EMOTE_SPAM_LIMIT} emotes in last ${EMOTE_SPAM_WINDOW_MS / 1000}s`);
@@ -1946,8 +2069,9 @@ process.on("uncaughtException", (err) => {
   console.error("[PROCESS] Uncaught exception:", err);
 });
 
-process.on("SIGINT", () => {
+process.on("SIGINT", async () => {
   console.log("\n[PROCESS] Shutting down...");
+  await edit.shutdown();
   savePlaytime();
   if (currentStreamId) {
     saveGreetingsToFile(currentStreamId);
@@ -1956,8 +2080,9 @@ process.on("SIGINT", () => {
   process.exit(0);
 });
 
-process.on("SIGTERM", () => {
+process.on("SIGTERM", async () => {
   console.log("\n[PROCESS] Shutting down...");
+  await edit.shutdown();
   savePlaytime();
   if (currentStreamId) {
     saveGreetingsToFile(currentStreamId);

@@ -53,7 +53,21 @@ const DEFAULT_CONFIG = {
   gameTextColor: "#FFFFFF",
   gameOutlineColor: "#000000",
   gameOutlineWidth: 2,
-  gameShadow: true
+  gameShadow: true,
+  editEnabled: false,
+  obsHost: "127.0.0.1",
+  obsPort: 4455,
+  obsPassword: "",
+  editCameraSource: "",
+  editAudioSource: "",
+  editCommand: "!edit",
+  editDuration: 30,
+  editCooldown: 120,
+  editWho: ["broadcaster", "moderator", "vip"],
+  editIntensity: 100,
+  editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
+  editEmotes: true,
+  editLatencyMs: 60
 };
 
 let serverProcess = null;
@@ -195,12 +209,32 @@ function sanitizeConfig(input) {
     gameTextColor: color(src.gameTextColor, DEFAULT_CONFIG.gameTextColor),
     gameOutlineColor: color(src.gameOutlineColor, DEFAULT_CONFIG.gameOutlineColor),
     gameOutlineWidth: clamp(num(src.gameOutlineWidth, DEFAULT_CONFIG.gameOutlineWidth), 0, 10),
-    gameShadow: src.gameShadow !== false
+    gameShadow: src.gameShadow !== false,
+    editEnabled: src.editEnabled === true,
+    obsHost: typeof src.obsHost === "string" && /^[\w.-]{1,100}$/.test(src.obsHost.trim()) ? src.obsHost.trim() : DEFAULT_CONFIG.obsHost,
+    obsPort: clamp(num(src.obsPort, DEFAULT_CONFIG.obsPort, { min: 1, int: true }), 1, 65535),
+    obsPassword: typeof src.obsPassword === "string" ? src.obsPassword.slice(0, 200) : "",
+    editCameraSource: typeof src.editCameraSource === "string" ? src.editCameraSource.slice(0, 200) : "",
+    editAudioSource: typeof src.editAudioSource === "string" ? src.editAudioSource.slice(0, 200) : "",
+    editCommand: typeof src.editCommand === "string" && src.editCommand.trim() ? src.editCommand.trim().split(/\s+/)[0].slice(0, 40) : DEFAULT_CONFIG.editCommand,
+    editDuration: clamp(num(src.editDuration, DEFAULT_CONFIG.editDuration, { min: 5, int: true }), 5, 600),
+    editCooldown: clamp(num(src.editCooldown, DEFAULT_CONFIG.editCooldown, { int: true }), 0, 3600),
+    editWho: Array.isArray(src.editWho)
+      ? [...new Set(src.editWho.filter(w => ["broadcaster", "moderator", "vip", "subscriber", "everyone"].includes(w)))]
+      : DEFAULT_CONFIG.editWho.slice(),
+    editIntensity: clamp(num(src.editIntensity, DEFAULT_CONFIG.editIntensity, { int: true }), 10, 250),
+    editEffects: Array.isArray(src.editEffects)
+      ? [...new Set(src.editEffects.filter(e => EDIT_EFFECTS.includes(e)))]
+      : DEFAULT_CONFIG.editEffects.slice(),
+    editEmotes: src.editEmotes !== false,
+    editLatencyMs: clamp(num(src.editLatencyMs, DEFAULT_CONFIG.editLatencyMs, { int: true }), 0, 500)
   };
 }
 
-// Ключи элемента «Текущая игра»: их изменение не требует перезапуска бота
+// Ключи элемента «Текущая игра» и эдита: их изменение не требует перезапуска бота
 const isGameKey = (key) => key.startsWith("game");
+const isEditKey = (key) => key.startsWith("edit") || key.startsWith("obs");
+const EDIT_EFFECTS = require("./edit").EFFECT_KEYS;
 
 // Запрос к API запущенного бота
 function botFetch(pathname, options = {}) {
@@ -385,15 +419,15 @@ app.post("/api/config", async (req, res) => {
     // Поменялся только элемент «Текущая игра» — отдаём настройки работающему боту, без перезапуска чата и эмоутов
     const changed = [...new Set([...Object.keys(previous), ...Object.keys(config)])]
       .filter(key => JSON.stringify(previous[key]) !== JSON.stringify(config[key]));
-    if (restarting && changed.length && changed.every(isGameKey)) {
+    if (restarting && changed.length && changed.every(key => isGameKey(key) || isEditKey(key))) {
       try {
-        const gameSettings = Object.fromEntries(Object.keys(config).filter(isGameKey).map(key => [key, config[key]]));
-        const r = await botFetch("/api/game/overlay", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(gameSettings),
-        });
-        if (r.ok) restarting = false;
+        const send = async (pathname, test) => {
+          if (!changed.some(test)) return true;
+          const settings = Object.fromEntries(Object.keys(config).filter(test).map(key => [key, config[key]]));
+          const r = await botFetch(pathname, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
+          return r.ok;
+        };
+        if ((await send("/api/game/overlay", isGameKey)) && (await send("/api/edit/config", isEditKey))) restarting = false;
       } catch {}
     }
 
@@ -545,6 +579,29 @@ app.post("/api/update/install", async (req, res) => {
     res.status(400).json({ success: false, error: err.message });
   }
 });
+
+// ---- эдит: состояние, источники OBS, тестовый запуск — у бота (edit.js)
+async function proxyEdit(req, res, pathname, method = "GET") {
+  if (!isProcessRunning()) {
+    res.status(409).json({ success: false, botRunning: false, error: "Бот не запущен" });
+    return;
+  }
+  try {
+    const r = await botFetch(pathname, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: method === "POST" ? JSON.stringify(req.body || {}) : undefined,
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (err) {
+    res.status(502).json({ success: false, error: "Бот не ответил" });
+  }
+}
+app.get("/api/edit/state", (req, res) => proxyEdit(req, res, "/api/edit/state"));
+app.get("/api/edit/sources", (req, res) => proxyEdit(req, res, "/api/edit/sources"));
+app.post("/api/edit/start", (req, res) => proxyEdit(req, res, "/api/edit/start", "POST"));
+app.post("/api/edit/stop", (req, res) => proxyEdit(req, res, "/api/edit/stop", "POST"));
 
 app.get("/api/status", (req, res) => {
   res.json({ 

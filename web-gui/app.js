@@ -38,6 +38,9 @@ const KEY_TAB = {
   gameShowBoxArt: 'game', gameShowPaused: 'game', gameHideWhenNoGame: 'game', gameIdleMinutes: 'game',
   gameFontFamily: 'game', gameFontSize: 'game', gameBold: 'game', gameTextColor: 'game',
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
+  editEnabled: 'edit', obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
+  editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
+  editIntensity: 'edit', editEffects: 'edit', editEmotes: 'edit', editLatencyMs: 'edit',
 };
 
 const state = {
@@ -436,12 +439,26 @@ function readForm() {
   out.greetingEmotes = greetingPicker.get();
   out.emoteBlacklist = blacklistPicker.get();
   out.greetingAnimations = animPicker.get();
+  for (const key of listKeys()) out[key] = listValues(key);
   return out;
+}
+
+// Группы галочек с data-list="<ключ>" → массив отмеченных value (в порядке на странице)
+function listKeys() {
+  return [...new Set([...document.querySelectorAll('[data-list]')].map(el => el.dataset.list))];
+}
+function listValues(key) {
+  return [...document.querySelectorAll(`[data-list="${key}"]`)].filter(el => el.checked).map(el => el.value);
 }
 
 function writeForm(cfg) {
   setFontValue(cfg.greetingFontFamily);
   setFontValue(cfg.gameFontFamily, 'gameFont');
+  setSelectValue($('editCamera'), cfg.editCameraSource);
+  setSelectValue($('editAudio'), cfg.editAudioSource);
+  for (const el of document.querySelectorAll('[data-list]')) {
+    el.checked = Array.isArray(cfg[el.dataset.list]) && cfg[el.dataset.list].includes(el.value);
+  }
   for (const input of simpleFields) {
     const value = cfg[input.dataset.key];
     if (input.type === 'checkbox') input.checked = value !== false;
@@ -454,6 +471,7 @@ function writeForm(cfg) {
   animPicker.refreshDemos(); // в демо на плитках — эмоут приветствия из конфига
   updateBoostRow();
   updateVolumeLabel();
+  updateEditIntensityLabel();
 }
 
 function changedKeys() {
@@ -529,12 +547,14 @@ function updateOverlayLinks() {
   $('openEmotes').href = emotes;
   $('openGreeting').href = greeting;
   $('openGame').href = game;
+  $('urlEdit').textContent = `http://127.0.0.1:${port}/edit.html`;
 }
 
 for (const input of simpleFields) {
   input.addEventListener('input', updateDirty);
   input.addEventListener('change', updateDirty);
 }
+document.querySelectorAll('[data-list]').forEach(el => el.addEventListener('change', updateDirty));
 $('boostOn').addEventListener('change', updateBoostRow);
 
 function updateVolumeLabel() {
@@ -1257,10 +1277,92 @@ function showTab(name) {
   if (name === 'console') consoleEl.scrollTop = consoleEl.scrollHeight;
   if (name === 'greetings' && state.emotes.length) setTimeout(() => previewGreeting(), 150);
   if (name === 'game') { previewGame(); loadGameState(); }
+  if (name === 'edit') { loadEditSources(); pollEditState(); }
   stages.forEach(fitStage);
 }
 
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
+
+// ---------------------------------------------------------------- эдит (edit.js у бота)
+
+// В выпадающем списке может не быть сохранённого значения (OBS ещё не ответил, источник переименован) — добавим его
+function setSelectValue(select, value, label) {
+  if (!select) return;
+  if (value && ![...select.options].some(o => o.value === value)) {
+    select.appendChild(el('option', { value, text: label || `${value} (нет в OBS)` }));
+  }
+  if (!select.querySelector('option[value=""]')) select.prepend(el('option', { value: '', text: '— не выбрано —' }));
+  select.value = value || '';
+}
+
+function fillSourceSelect(select, items, current) {
+  select.replaceChildren(el('option', { value: '', text: '— не выбрано —' }));
+  for (const item of items) select.appendChild(el('option', { value: item.name, text: item.name }));
+  setSelectValue(select, current);
+}
+
+async function loadEditSources() {
+  const hint = $('editSourcesHint');
+  hint.textContent = 'Спрашиваю OBS…';
+  try {
+    const res = await fetch('/api/edit/sources');
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
+    fillSourceSelect($('editCamera'), data.video, $('editCamera').value || (state.saved && state.saved.editCameraSource));
+    fillSourceSelect($('editAudio'), data.audio, $('editAudio').value || (state.saved && state.saved.editAudioSource));
+    hint.textContent = `В OBS: ${data.video.length} видео, ${data.audio.length} со звуком`;
+    updateDirty();
+  } catch (err) {
+    hint.textContent = /Бот не запущен/.test(err.message)
+      ? 'Запустите бота — список берётся из OBS через него.'
+      : `Не получилось: ${err.message}. Проверьте, что эдит включён и настройки сохранены.`;
+  }
+}
+
+function updateEditIntensityLabel() {
+  $('editIntensityValue').textContent = `${$('editIntensity').value}%`;
+}
+$('editIntensity').addEventListener('input', updateEditIntensityLabel);
+
+let editPollTimer = null;
+async function pollEditState() {
+  clearTimeout(editPollTimer);
+  if (!document.querySelector('.page[data-page="edit"].active')) return; // опрашиваем только на этой вкладке
+  try {
+    const res = await fetch('/api/edit/state');
+    const s = await res.json();
+    if (res.status === 409) {
+      $('editObs').textContent = 'бот не запущен';
+      $('editRun').textContent = '—';
+      $('editBpm').textContent = '—';
+    } else {
+      $('editObs').textContent = !s.enabled ? 'эдит выключен' : s.obs.connected ? 'подключён ✓' : (s.obs.error || 'подключаюсь…');
+      $('editObs').style.color = s.obs.connected ? 'var(--ok)' : s.enabled ? 'var(--warn)' : '';
+      $('editLevel').style.width = s.level == null ? '0' : `${Math.min(100, Math.round(Math.sqrt(s.level) * 100))}%`;
+      $('editBpm').textContent = s.bpm ? `${s.bpm} BPM${s.locked ? '' : ' ?'}` : (s.level == null ? 'нет звука' : 'ищу бит…');
+      $('editBpm').title = s.locked ? 'темп найден, эффекты идут по сетке битов' : 'темп ещё не найден — эффекты идут по отдельным ударам';
+      $('editBeat').style.opacity = s.beatPhase == null ? 0 : Math.max(0, 1 - s.beatPhase * 2.5);
+      $('editRun').textContent = s.running ? `идёт, осталось ${s.remaining} с` : s.cooldown ? `отдыхает ${s.cooldown} с` : 'готов';
+      $('editRun').style.color = s.running ? 'var(--ok)' : '';
+    }
+  } catch {}
+  editPollTimer = setTimeout(pollEditState, 250);
+}
+
+$('btnEditSources').addEventListener('click', loadEditSources);
+$('btnEditTest').addEventListener('click', async () => {
+  try {
+    await api('/api/edit/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration: 15 }) });
+    toast('Эдит запущен на 15 секунд', 'ok');
+  } catch (err) {
+    toast(`Эдит не запустился: ${err.message}`, 'err');
+  }
+});
+$('btnEditStop').addEventListener('click', () => botAction('/api/edit/stop', 'Эдит остановлен'));
+$('toggleObsPassword').addEventListener('click', () => {
+  const input = $('obsPassword');
+  input.type = input.type === 'password' ? 'text' : 'password';
+});
 
 // ---------------------------------------------------------------- websocket
 

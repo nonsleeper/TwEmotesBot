@@ -61,6 +61,16 @@ Providers can be unreachable (7TV is blocked in Russia without a VPN — often a
 
 Saving config when **only** `game*` keys changed doesn't restart the bot: `web-server.js` POSTs them to the bot's `/api/game/overlay`, which rebuilds `GAME_STYLE` in place (falls back to a restart if that fails). `idle-monitor.js` is a separate file, so `tray/make-release.ps1` copies it explicitly; `games` is in its `$userData`.
 
+### «Эдит» на вебке (`edit.js`, `obs.js`, `overlay/edit.html`)
+
+Chat command (`editCommand`, default `!edit`; roles in `editWho`, checked by `canTriggerEdit` in `server.js`; `!edit stop` stops, repeating extends) or the panel's test button starts a timed session. No OBS plugin and no camera capture: the bot drives the user's own OBS camera source through OBS's built-in WebSocket server (`obs.js` — minimal obs-websocket v5 client on `ws`: auth, requests, `RequestBatch`, `InputVolumeMeters` events, reconnect).
+- Beats: `BeatTracker` takes the selected audio input's peak level (~20 Hz from `InputVolumeMeters`), detects onsets, estimates tempo/phase (80–180 BPM) and predicts beats on a grid; `editLatencyMs` shifts the grid earlier. Unlocked → falls back to raw onsets.
+- Effects (`EFFECTS`, ported from the user's offline `render.py` `motion()`): zoom/shake = crop + scale of the scene item (frame stays put, picture moves inside), tilt = rotation around the item centre (`buildTransform`/`centerOf`, handles alignment and bounds), flash/hue/mono/contrast = a `color_filter_v2` filter the bot adds to the camera (`FILTER_NAME`), enabled only during an edit. One `RequestBatch` per frame at ~30 fps; a frame is skipped while the previous batch is pending. RGB split / glitch / blur are impossible without a shader plugin.
+- Safety: the original transform is saved to `cache/edit-restore.json` before an edit and restored at the end, on `/api/shutdown`/signals (`edit.shutdown()`) and — after a crash — on the next OBS connection (`restoreAfterCrash`).
+- The overlay gets `edit-start` (camera rect in canvas coords + canvas size), `edit-beat` (emote URLs from recent chat via `rememberEmote`, fallback greeting emotes) and `edit-end` on `/ws/edit`.
+- Panel «Эдит» tab: `/api/edit/state|sources|start|stop` proxied to the bot; `edit*`/`obs*` keys are applied live via the bot's `/api/edit/config` (no restart). Checkbox groups use `data-list="<key>"` (array values) — `listKeys()`/`listValues()` in `app.js`. `edit.js` and `obs.js` are in the copy list of `make-release.ps1`.
+- Gotcha: on Windows, Node 24's `fs.rmSync` silently does nothing when the path contains non-ASCII characters (this repo lives in «Новая папка»); delete files with `fs.unlinkSync`.
+
 ### Persistent state (all gitignored)
 
 - `cache/emotes/` — downloaded emote images (png/gif) served via `/cache`; `cache/emote_names.json` maps code → id and is what the panel's `/api/emotes` returns.

@@ -34,7 +34,7 @@ New-Item -ItemType Directory $out, $app, "$out\runtime" | Out-Null
 
 Copy-Item $nodeSrc "$out\runtime\node.exe"
 Copy-Item "$root\EmotesBotTray.exe" $out
-Copy-Item "$root\server.js", "$root\web-server.js", "$root\system-fonts.js", "$root\idle-monitor.js", "$root\updates.js",
+Copy-Item "$root\server.js", "$root\web-server.js", "$root\system-fonts.js", "$root\idle-monitor.js", "$root\updates.js", "$root\obs.js", "$root\edit.js",
           "$root\updater.ps1", "$root\package.json", "$root\package-lock.json", "$root\bot-config.example.json" $app
 if (-not $NoSpecialSounds) { Copy-Item "$root\special-sounds-packed.json" $app }
 Copy-Item "$root\overlay", "$root\web-gui" $app -Recurse

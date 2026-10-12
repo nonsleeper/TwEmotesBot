@@ -357,6 +357,22 @@
     .modal-status.err { color: var(--err); }
     .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
+    /* ---------- edit ---------- */
+    .eff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .eff {
+      display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 10px 34px; position: relative; cursor: pointer;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    }
+    .eff input { position: absolute; left: 11px; top: 12px; accent-color: var(--accent); width: 15px; height: 15px; }
+    .eff small { color: var(--dim); font-size: 12px; }
+    .eff:has(input:checked) { border-color: var(--accent); background: rgba(145, 71, 255, .12); }
+    .edit-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, .04); }
+    .edit-row > span:first-child { color: var(--muted); width: 64px; flex: none; }
+    .edit-row b { font-weight: 600; }
+    .meter { flex: 1; height: 8px; background: var(--field); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .meter-bar { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s linear; }
+    .beat-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent-2); opacity: 0; flex: none; }
+
     /* ---------- console ---------- */
     .console-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
     .console-bar .input { flex: 1; min-width: 200px; }
@@ -427,6 +443,7 @@
       <button class="tab" data-tab="greetings">Приветствия<span class="badge" data-badge="greetings"></span></button>
       <button class="tab" data-tab="emotes">Эмоуты<span class="badge" data-badge="emotes"></span></button>
       <button class="tab" data-tab="game">Игра<span class="badge" data-badge="game"></span></button>
+      <button class="tab" data-tab="edit">Эдит<span class="badge" data-badge="edit"></span></button>
       <button class="tab" data-tab="console">Консоль</button>
     </nav>
 
@@ -800,6 +817,141 @@
           </div>
           <div class="games" id="gamesList"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ===== Эдит ===== -->
+    <section class="page" data-page="edit">
+      <div class="split split-wide">
+        <div class="split-main">
+          <div class="card">
+            <h2>Эдит на вебке</h2>
+            <p class="desc">По команде в чате вебка на время превращается в эдит: под бит музыки бот дёргает источник камеры в OBS — зум-удары, тряска, наклон, вспышки, цвет — и бросает на вебку эмоуты из чата. Работает через встроенный в OBS сервер WebSocket, плагины не нужны. После эдита вебка возвращается как была.</p>
+            <label class="check">
+              <input type="checkbox" id="editEnabled" data-key="editEnabled">
+              <span>Включить эдит</span>
+            </label>
+          </div>
+
+          <div class="card">
+            <h2>Подключение к OBS</h2>
+            <p class="desc">В OBS: <b>Инструменты → Настройки сервера WebSocket</b> → «Включить сервер WebSocket». Там же «Показать сведения о подключении» — порт и пароль.</p>
+            <div class="grid-2">
+              <div class="field">
+                <label for="obsHost">Адрес</label>
+                <input class="input" id="obsHost" data-key="obsHost" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="obsPort">Порт</label>
+                <input class="input" id="obsPort" data-key="obsPort" type="number" min="1" max="65535">
+              </div>
+            </div>
+            <div class="field" style="margin-top:14px">
+              <label for="obsPassword">Пароль сервера WebSocket</label>
+              <div class="with-btn">
+                <input class="input" id="obsPassword" data-key="obsPassword" type="password" autocomplete="off" spellcheck="false">
+                <button class="btn" id="toggleObsPassword" type="button" title="Показать / скрыть">👁</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Источники</h2>
+            <div class="grid-2">
+              <div class="field">
+                <label for="editCamera">Камера</label>
+                <select class="input" id="editCamera" data-key="editCameraSource"></select>
+                <div class="hint">Источник вебки в OBS. Он должен быть в сцене, которая идёт в эфир.</div>
+              </div>
+              <div class="field">
+                <label for="editAudio">Звук для битов</label>
+                <select class="input" id="editAudio" data-key="editAudioSource"></select>
+                <div class="hint">Где играет музыка: «Звук рабочего стола», плеер, браузер…</div>
+              </div>
+            </div>
+            <div class="sentence" style="margin-top:10px">
+              <button class="btn btn-sm" id="btnEditSources" type="button">↻ Обновить список из OBS</button>
+              <span id="editSourcesHint" style="color:var(--dim)"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Запуск</h2>
+            <div class="sentence" style="margin-bottom:8px; gap:8px 14px">
+              Команда <input class="input" id="editCommand" data-key="editCommand" style="width:120px" spellcheck="false">
+              на <input class="num" id="editDuration" data-key="editDuration" type="number" min="5" max="600"> сек.,
+              повтор не раньше чем через <input class="num" id="editCooldown" data-key="editCooldown" type="number" min="0" max="3600"> сек.
+            </div>
+            <div class="sentence" style="gap:8px 16px">
+              Могут запускать:
+              <label class="check"><input type="checkbox" data-list="editWho" value="broadcaster"> стример</label>
+              <label class="check"><input type="checkbox" data-list="editWho" value="moderator"> модеры</label>
+              <label class="check"><input type="checkbox" data-list="editWho" value="vip"> VIP</label>
+              <label class="check"><input type="checkbox" data-list="editWho" value="subscriber"> сабы</label>
+              <label class="check"><input type="checkbox" data-list="editWho" value="everyone"> все</label>
+            </div>
+            <p class="desc" style="margin:8px 0 0">Повтор команды во время эдита продлевает его. <code>!edit stop</code> — остановить.</p>
+          </div>
+
+          <div class="card">
+            <h2>Эффекты</h2>
+            <p class="desc">На каждый бит — случайный из отмеченных, без повторов подряд.</p>
+            <div class="eff-grid">
+              <label class="eff" title="зум-удар в бит"><input type="checkbox" data-list="editEffects" value="punch"><b>Удар</b><small>зум-удар в бит</small></label>
+              <label class="eff" title="сильный удар со вспышкой и тряской"><input type="checkbox" data-list="editEffects" value="smash"><b>Смэш</b><small>сильный удар со вспышкой и тряской</small></label>
+              <label class="eff" title="картинку трясёт весь бит"><input type="checkbox" data-list="editEffects" value="shake"><b>Тряска</b><small>картинку трясёт весь бит</small></label>
+              <label class="eff" title="плавный наклон рамки"><input type="checkbox" data-list="editEffects" value="tilt"><b>Наклон</b><small>плавный наклон рамки</small></label>
+              <label class="eff" title="белая вспышка на ударе"><input type="checkbox" data-list="editEffects" value="flash"><b>Вспышка</b><small>белая вспышка на ударе</small></label>
+              <label class="eff" title="сдвиг цвета и насыщенность"><input type="checkbox" data-list="editEffects" value="hue"><b>Цвет</b><small>сдвиг цвета и насыщенность</small></label>
+              <label class="eff" title="чёрно-белое и контраст"><input type="checkbox" data-list="editEffects" value="mono"><b>Моно</b><small>чёрно-белое и контраст</small></label>
+              <label class="eff" title="мигание яркостью"><input type="checkbox" data-list="editEffects" value="strobe"><b>Стробоскоп</b><small>мигание яркостью</small></label>
+              <label class="eff" title="наезд с покачиванием"><input type="checkbox" data-list="editEffects" value="zoomspin"><b>Зум с поворотом</b><small>наезд с покачиванием</small></label>
+            </div>
+            <div class="divider"></div>
+            <div class="sentence" style="margin-bottom:8px">
+              Сила
+              <input type="range" id="editIntensity" data-key="editIntensity" min="10" max="250" step="5" style="width:200px; accent-color:var(--accent)">
+              <b id="editIntensityValue"></b>
+            </div>
+            <label class="check" style="margin-bottom:8px">
+              <input type="checkbox" id="editEmotes" data-key="editEmotes">
+              <span>Эмоуты из чата на бит прямо на вебке
+                <small>Нужен источник «Браузер» с адресом из карточки справа.</small></span>
+            </label>
+            <div class="sentence">
+              Поправка задержки <input class="num" id="editLatency" data-key="editLatencyMs" type="number" min="0" max="500" step="10"> мс
+              <span style="color:var(--dim)">— если эффекты запаздывают за битом, увеличьте</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="split-side">
+          <div class="card">
+            <h2>Состояние</h2>
+            <div class="edit-row"><span>OBS</span><b id="editObs">…</b></div>
+            <div class="edit-row"><span>Музыка</span>
+              <span class="meter"><span class="meter-bar" id="editLevel"></span></span>
+              <span class="beat-dot" id="editBeat"></span>
+              <b id="editBpm">—</b>
+            </div>
+            <div class="edit-row"><span>Эдит</span><b id="editRun">—</b></div>
+            <div class="sentence" style="margin-top:12px">
+              <button class="btn btn-primary" id="btnEditTest" type="button">▶ Тест: эдит 15 с</button>
+              <button class="btn" id="btnEditStop" type="button">■ Стоп</button>
+            </div>
+            <p class="desc" style="margin:8px 0 0">Тест запускается сразу, без паузы и проверки прав. Сначала сохраните настройки.</p>
+          </div>
+
+          <div class="card">
+            <h2>Источник для OBS</h2>
+            <p class="desc">Для эмоутов на вебке: «Браузер» на весь экран, поверх вебки.</p>
+            <div class="source">
+              <code id="urlEdit"></code>
+              <span class="size">1920 × 1080</span>
+              <button class="btn btn-sm" data-copy="urlEdit">Копировать</button>
+            </div>
+          </div>
+        </aside>
       </div>
     </section>
 
