@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Emotes Overlay</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 900px;
+      height: 600px;
+      overflow: hidden;
+      background: transparent;
+      font-family: Arial, sans-serif;
+    }
+
+    .emote {
+      position: absolute;
+      width: 150px;
+      height: 150px;
+      object-fit: contain;
+      z-index: 99998;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s ease-in-out, transform 0.2s ease-in-out;
+    }
+
+    .emote.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // ?preview — режим предпросмотра в панели: без WebSocket, события приходят через postMessage
+    const PREVIEW = new URLSearchParams(location.search).has("preview");
+    let ws = null;
+    const activeEmotes = [];
+    const activeEmoteByCode = new Map();
+    let lastEmoteTime = 0;
+    let reconnectTimer = null;
+    let lastPingTs = Date.now();
+    let connectStartedTs = 0;
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWebSocket();
+      }, 2000);
+    }
+
+    const CANVAS_WIDTH = 900;
+    const CANVAS_HEIGHT = 600;
+    const EMOTE_SIZE = 150;
+    const DEFAULT_DISPLAY_MS = 6000;
+    const FADE_OUT_MS = 300;
+    const SIMULTANEOUS_THRESHOLD_MS = 200; // Если эмоуты приходят в пределах 200мс - считаем одновременными
+
+    function applyEmoteTransform(item) {
+      item.img.style.left = item.position.x + "px";
+      item.img.style.top = item.position.y + "px";
+      item.img.style.transform = `rotate(${item.rotation}deg) scale(${item.scale})`;
+    }
+
+    function getEmoteKey(data) {
+      // регистр важен: на 7TV/BTTV "LUL" и "lul" — разные эмоуты
+      const code = String(data.code || "").trim();
+      if (code) return `code:${code}`;
+
+      const url = String(data.url || "").split("?")[0].trim().toLowerCase();
+      if (url) return `url:${url}`;
+
+      return "";
+    }
+
+    function getEmoteUrlKey(url) {
+      const normalized = String(url || "").split("?")[0].trim().toLowerCase();
+      if (!normalized) return "";
+      return `url:${normalized}`;
+    }
+
+    function scheduleHide(item, durationMs) {
+      if (item.hideTimer) clearTimeout(item.hideTimer);
+      if (item.removeTimer) clearTimeout(item.removeTimer);
+
+      item.hideTimer = setTimeout(() => {
+        item.img.classList.remove("show");
+
+        item.removeTimer = setTimeout(() => {
+          item.img.remove();
+          item.removed = true;
+          const index = activeEmotes.indexOf(item.img);
+          if (index > -1) {
+            activeEmotes.splice(index, 1);
+          }
+
+          for (const key of item.keys || []) {
+            const mapped = activeEmoteByCode.get(key);
+            if (mapped === item) {
+              activeEmoteByCode.delete(key);
+            }
+          }
+
+          console.log("[EMOTE] Finished showing:", item.code, "Active:", activeEmotes.length);
+        }, FADE_OUT_MS);
+      }, durationMs);
+    }
+
+    function connectWebSocket() {
+      if (PREVIEW) return;
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      connectStartedTs = Date.now();
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws/emotes`);
+
+      ws.onopen = () => {
+        console.log("[WS] Emotes connected");
+        lastPingTs = Date.now();
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("[WS] Emotes closed, reconnecting...");
+        scheduleReconnect();
+      };
+
+      ws.onerror = (e) => {
+        console.error("[WS] Emotes error", e);
+        scheduleReconnect();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log("[WS] Received:", data);
+
+          if (data.type === "ping") {
+            lastPingTs = Date.now();
+            return;
+          }
+
+          if (data.type === "emote" && data.url) {
+            console.log("[EMOTE] Showing:", data.code);
+            showEmote(data);
+          }
+        } catch (err) {
+          console.error("[PARSE ERROR]", err);
+        }
+      };
+    }
+
+    connectWebSocket();
+
+    if (PREVIEW) {
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin) return;
+        const data = event.data || {};
+        if (data.type === "emote" && data.url) showEmote(data);
+        else if (data.type === "clear") clearAll();
+      });
+    }
+
+    function clearAll() {
+      for (const item of new Set(activeEmoteByCode.values())) {
+        clearTimeout(item.hideTimer);
+        clearTimeout(item.removeTimer);
+        item.removed = true;
+        item.img.remove();
+      }
+      activeEmoteByCode.clear();
+      activeEmotes.length = 0;
+    }
+
+    setInterval(() => {
+      if (PREVIEW) return;
+      const now = Date.now();
+      if (!ws) {
+        scheduleReconnect();
+        return;
+      }
+
+      if (ws.readyState === WebSocket.CLOSED) {
+        scheduleReconnect();
+        return;
+      }
+
+      if (ws.readyState !== WebSocket.OPEN) {
+        if (now - connectStartedTs > 20000) {
+          console.log("[WS] Emotes connect timeout, forcing reconnect...");
+          try { ws.close(); } catch {}
+          scheduleReconnect();
+        }
+        return;
+      }
+
+      if (now - lastPingTs > 15000) {
+        console.log("[WS] Emotes heartbeat timeout, reconnecting...");
+        try { ws.close(); } catch {}
+      }
+
+      if (now - lastPingTs > 45000) {
+        console.log("[WS] Emotes stale too long, reloading page...");
+        window.location.reload();
+      }
+    }, 5000);
+
+    function getRandomPosition(size) {
+      const maxX = Math.max(0, CANVAS_WIDTH - size);
+      const maxY = Math.max(0, CANVAS_HEIGHT - size);
+
+      const x = Math.random() * maxX;
+      const y = Math.random() * maxY;
+
+      return { x, y };
+    }
+
+    function getRandomRotation() {
+      return Math.random() * 30 - 15; // -15 до +15 градусов
+    }
+
+    function getCenterPosition(size) {
+      return {
+        x: (CANVAS_WIDTH - size) / 2,
+        y: (CANVAS_HEIGHT - size) / 2
+      };
+    }
+
+    function showEmote(data) {
+      const now = Date.now();
+      const timeSinceLastEmote = now - lastEmoteTime;
+      lastEmoteTime = now;
+
+      const displayDurationMs = Number.isFinite(data.displayDurationMs) ? Number(data.displayDurationMs) : DEFAULT_DISPLAY_MS;
+      const boostEnabled = data.boostOnSameFromDifferentUser !== false;
+      const boostStep = Number.isFinite(data.boostScaleStep) ? Number(data.boostScaleStep) : 0.2;
+      const codeKey = getEmoteKey(data);
+      const urlKey = getEmoteUrlKey(data.url);
+      const incomingUser = String(data.user || "").toLowerCase();
+
+      const existing = activeEmoteByCode.get(codeKey) || activeEmoteByCode.get(urlKey);
+
+      if (boostEnabled && existing) {
+        if (existing && existing.removed) {
+          for (const key of existing.keys || []) {
+            activeEmoteByCode.delete(key);
+          }
+        } else {
+          const hasBothUsers = Boolean(incomingUser && existing.user);
+          const differentUser = hasBothUsers && existing.user !== incomingUser;
+          if (differentUser) {
+          existing.scale = Number((existing.scale * (1 + boostStep)).toFixed(3));
+          existing.user = incomingUser;
+          existing.img.classList.add("show");
+          applyEmoteTransform(existing);
+          scheduleHide(existing, displayDurationMs);
+          console.log("[EMOTE] Boosted existing emote:", codeKey || urlKey, "scale:", existing.scale, "from user:", incomingUser);
+          return;
+          }
+        }
+      }
+
+      const size = Number.isFinite(data.size) ? Number(data.size) : EMOTE_SIZE;
+      const img = document.createElement("img");
+      img.className = "emote";
+      img.style.width = img.style.height = size + "px";
+      img.src = data.url + (PREVIEW ? "" : "?t=" + Date.now());
+
+      let position;
+      let rotation;
+
+      // Если есть активные эмоуты ИЛИ последний эмоут был недавно - рандомная позиция
+      // Это означает что эмоуты из одного сообщения будут в разных местах
+      if (activeEmotes.length > 0 || timeSinceLastEmote < SIMULTANEOUS_THRESHOLD_MS) {
+        position = getRandomPosition(size);
+        rotation = getRandomRotation();
+        console.log("[EMOTE] Random position:", position, "rotation:", rotation);
+      } else {
+        position = getCenterPosition(size);
+        rotation = 0;
+        console.log("[EMOTE] Center position");
+      }
+
+      const item = {
+        img,
+        code: codeKey,
+        urlKey,
+        keys: [codeKey, urlKey].filter(Boolean),
+        user: incomingUser,
+        position,
+        rotation,
+        scale: 1,
+        loaded: false,
+        removed: false,
+        hideTimer: null,
+        removeTimer: null,
+      };
+
+      applyEmoteTransform(item);
+
+      for (const key of item.keys) {
+        activeEmoteByCode.set(key, item);
+      }
+
+      img.onload = () => {
+        if (item.removed) return;
+        item.loaded = true;
+        console.log("[IMG] Loaded:", data.code);
+        if (!img.isConnected) {
+          document.body.appendChild(img);
+        }
+        if (!activeEmotes.includes(img)) {
+          activeEmotes.push(img);
+        }
+
+        setTimeout(() => {
+          img.classList.add("show");
+        }, 50);
+
+        scheduleHide(item, displayDurationMs);
+      };
+
+      img.onerror = () => {
+        console.error("[IMG] Failed to load", img.src);
+      };
+    }
+  </script>
+</body>
+</html>

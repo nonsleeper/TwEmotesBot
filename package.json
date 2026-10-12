@@ -1,0 +1,32 @@
+{
+  "name": "twitch-emotes-bot",
+  "version": "2.0.0",
+  "description": "Twitch emotes & greetings overlay bot for OBS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node web-server.js",
+    "server": "node server.js",
+    "pack:special-sounds": "node scripts/pack-special-sounds.js"
+  },
+  "keywords": [
+    "twitch",
+    "obs",
+    "overlay",
+    "emotes",
+    "7tv",
+    "bttv",
+    "ffz"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "emotesBot": {
+    "updateRepo": ""
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2",
+    "tmi.js": "^1.8.5",
+    "ws": "^8.19.0"
+  }
+}

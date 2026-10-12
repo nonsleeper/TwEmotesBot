@@ -1,0 +1,26 @@
+{
+  "channel": "your_channel_name",
+  "twitchClientId": "your_client_id",
+  "twitchClientSecret": "your_client_secret",
+  "port": 3000,
+  "emoteBlacklist": [],
+  "emoteSpamLimit": 5,
+  "emoteSpamWindow": 20,
+  "emoteBoostOnSameFromDifferentUser": true,
+  "emoteBoostScalePercent": 20,
+  "greetingExpireDays": 1,
+  "greetingKeywords": [
+    "привет",
+    "здарова",
+    "ку",
+    "hiii",
+    "hi"
+  ],
+  "greetingEmotes": [
+    "hiii",
+    "VoteNay",
+    "TwitchLit",
+    "VoteYea"
+  ],
+  "oldFilesExpireDays": 7
+}

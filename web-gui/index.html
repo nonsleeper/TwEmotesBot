@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Emotes Bot — панель управления</title>
+  <style>
+    :root {
+      color-scheme: dark; /* тёмные системные элементы: выпадающие списки, скроллбары, выбор цвета */
+      --bg: #141417;
+      --panel: #1c1c21;
+      --panel-2: #24242b;
+      --field: #101013;
+      --border: #2f2f38;
+      --text: #e8e8ee;
+      --muted: #9a9aa8;
+      --dim: #6c6c7a;
+      --accent: #9147ff;
+      --accent-2: #a970ff;
+      --ok: #2ecc71;
+      --warn: #f1c40f;
+      --err: #ff5c5c;
+      --radius: 10px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      min-height: 100vh;
+      padding-bottom: 90px;
+    }
+
+    button, input, textarea { font: inherit; color: inherit; }
+    a { color: var(--accent-2); }
+
+    .wrap { max-width: 1320px; margin: 0 auto; padding: 20px 16px; }
+
+    /* ---------- top bar ---------- */
+    .topbar {
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 18px; margin-bottom: 16px;
+    }
+    .brand { font-size: 18px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+    .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+
+    .status {
+      display: flex; align-items: center; gap: 10px;
+      background: var(--panel-2); border-radius: 999px; padding: 6px 14px 6px 10px;
+    }
+    .status .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+    .status[data-state="running"] .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    .status[data-state="starting"] .dot { background: var(--warn); animation: blink 1s infinite; }
+    .status[data-state="error"] .dot { background: var(--err); }
+    .status .main { font-weight: 600; }
+    .status .sub { color: var(--muted); }
+    @keyframes blink { 50% { opacity: .35; } }
+
+    .actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .btn {
+      border: 1px solid var(--border); background: var(--panel-2);
+      padding: 8px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap;
+      transition: background .15s, border-color .15s, opacity .15s;
+    }
+    .btn:hover:not(:disabled) { background: #2e2e37; border-color: #3d3d48; }
+    .btn:disabled { opacity: .4; cursor: default; }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-2); border-color: var(--accent-2); }
+    .btn-danger:hover:not(:disabled) { border-color: var(--err); color: var(--err); }
+    .btn-sm { padding: 5px 10px; font-size: 13px; }
+    .btn-ghost { background: transparent; }
+
+    /* ---------- banner ---------- */
+    .banner {
+      display: none; align-items: center; gap: 12px;
+      border-radius: var(--radius); padding: 12px 16px; margin-bottom: 16px;
+      border: 1px solid; line-height: 1.4;
+    }
+    .banner.show { display: flex; }
+    .banner.warn { background: rgba(241, 196, 15, .08); border-color: rgba(241, 196, 15, .35); }
+    .banner.err { background: rgba(255, 92, 92, .08); border-color: rgba(255, 92, 92, .4); }
+    .banner .text { flex: 1; }
+    .banner .text b { display: block; }
+
+    /* ---------- tabs ---------- */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    .tab {
+      background: none; border: none; padding: 10px 16px; cursor: pointer;
+      color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab .badge {
+      display: inline-block; min-width: 8px; height: 8px; border-radius: 50%;
+      background: var(--warn); margin-left: 6px; vertical-align: middle; visibility: hidden;
+    }
+    .tab .badge.show { visibility: visible; }
+
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ---------- cards & fields ---------- */
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
+    }
+    .card h2 { font-size: 15px; margin-bottom: 4px; }
+    .card .desc { color: var(--muted); margin-bottom: 14px; line-height: 1.45; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    @media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+
+    .field label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    .field .hint { color: var(--dim); font-size: 12px; margin-top: 5px; }
+
+    .input, .num {
+      width: 100%; background: var(--field); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 11px; outline: none; transition: border-color .15s;
+    }
+    .input:focus, .num:focus { border-color: var(--accent); }
+    .num { width: 80px; text-align: center; padding: 6px 8px; }
+    .num::-webkit-inner-spin-button { opacity: .5; }
+
+    .with-btn { display: flex; gap: 6px; }
+    .with-btn .input { flex: 1; }
+
+    .sentence { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; line-height: 2.2; }
+
+    .check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; line-height: 1.4; }
+    .check input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+    .check small { display: block; color: var(--dim); }
+
+    .divider { height: 1px; background: var(--border); margin: 16px 0; }
+
+    /* ---------- OBS links ---------- */
+    .source {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px 12px; margin-bottom: 8px;
+    }
+    .source .name { font-weight: 600; width: 110px; }
+    .source code { flex: 1; font-family: Consolas, monospace; color: var(--accent-2); word-break: break-all; }
+    .source .size { color: var(--dim); font-size: 12px; }
+
+    /* ---------- chips / tag input ---------- */
+    .chips {
+      display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+      background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+      padding: 6px; min-height: 44px; cursor: text;
+    }
+    .chips:focus-within { border-color: var(--accent); }
+    .chips input { flex: 1; min-width: 140px; background: none; border: none; outline: none; padding: 4px 6px; }
+
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+      padding: 3px 4px 3px 8px; max-width: 220px;
+    }
+    .chip img { width: 24px; height: 24px; object-fit: contain; }
+    .chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip.custom .label { font-style: italic; color: var(--muted); }
+    .chip .x {
+      border: none; background: none; cursor: pointer; color: var(--dim);
+      width: 20px; height: 20px; border-radius: 4px; line-height: 1; font-size: 16px;
+    }
+    .chip .x:hover { background: rgba(255, 92, 92, .15); color: var(--err); }
+    .chips .empty { color: var(--dim); padding: 4px 6px; }
+
+    /* ---------- emote picker ---------- */
+    .picker .chips { margin-bottom: 10px; cursor: default; }
+    .picker-search { display: flex; gap: 8px; margin-bottom: 8px; }
+    .picker-search .input { flex: 1; }
+    .results {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px;
+      max-height: 340px; overflow-y: auto; padding: 8px;
+      background: var(--field); border: 1px solid var(--border); border-radius: 8px;
+    }
+    .results::-webkit-scrollbar { width: 8px; }
+    .results::-webkit-scrollbar-thumb { background: #3a3a46; border-radius: 4px; }
+    .emote {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      background: var(--panel-2); border: 1px solid transparent; border-radius: 6px;
+      padding: 8px 4px 6px; cursor: pointer; position: relative;
+    }
+    .emote:hover { border-color: #444452; }
+    .emote img { width: 40px; height: 40px; object-fit: contain; }
+    .emote span { font-size: 11px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .emote.on { border-color: var(--accent); background: rgba(145, 71, 255, .14); }
+    .emote.on::after {
+      content: '✓'; position: absolute; top: 3px; right: 5px;
+      color: var(--accent-2); font-size: 12px; font-weight: 700;
+    }
+    .ptabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .ptab {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px;
+      padding: 4px 12px; cursor: pointer; font-size: 13px; color: var(--muted);
+    }
+    .ptab:hover { color: var(--text); border-color: #3d3d48; }
+    .ptab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .ptab .count { font-size: 11px; opacity: .7; }
+
+    .emote .src {
+      position: absolute; top: 3px; left: 4px; font-style: normal; font-size: 9px; font-weight: 700;
+      padding: 0 4px; border-radius: 3px; line-height: 14px; opacity: .85;
+    }
+    .src-twitch { background: #9147ff; color: #fff; }
+    .src-7tv { background: #2a9df4; color: #fff; }
+    .src-bttv { background: #d50014; color: #fff; }
+    .src-ffz { background: #555; color: #fff; }
+
+    .results .note { grid-column: 1 / -1; color: var(--dim); text-align: center; padding: 24px 8px; line-height: 1.5; }
+    .picker-foot { color: var(--dim); font-size: 12px; margin-top: 6px; min-height: 16px; }
+
+    /* ---------- split layout + preview ---------- */
+    .split { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; align-items: start; }
+    .split-wide { grid-template-columns: minmax(0, 1fr) minmax(380px, 520px); }
+    .split-side { position: sticky; top: 16px; }
+    @media (max-width: 980px) {
+      .split, .split-wide { grid-template-columns: 1fr; }
+      .split-side { position: static; order: -1; }
+    }
+    .stage {
+      position: relative; width: 100%; overflow: hidden; border-radius: 8px; border: 1px solid var(--border);
+      background-color: #2a2a31;
+      background-image: conic-gradient(#33333b 25%, transparent 0 50%, #33333b 0 75%, transparent 0);
+      background-size: 20px 20px;
+    }
+    /* color-scheme как у страницы оверлея: при несовпадении со страницей панели (dark) Chrome подкладывает под iframe белый фон */
+    .stage iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: transparent; color-scheme: light; }
+    .swatch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
+    .swatch input[type=color] {
+      width: 34px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px;
+      background: var(--field); cursor: pointer;
+    }
+    .swatch input[type=color]::-webkit-color-swatch-wrapper { padding: 3px; }
+    .swatch input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
+    select.input { padding: 6px 10px; cursor: pointer; }
+    /* выпадающий список рисует браузер — задаём цвета явно, иначе серый текст на тёмном */
+    select.input option { background: #24242b; color: #f2f2f7; }
+    select.input option:checked { background: var(--accent); color: #fff; }
+    select.input optgroup { background: #1a1a1f; color: var(--accent-2); font-style: normal; font-weight: 700; }
+    code { font-family: Consolas, monospace; font-size: 12px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+
+    /* ---------- animation picker ---------- */
+    .anim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
+    .anim {
+      display: flex; flex-direction: column; align-items: center; gap: 8px; position: relative;
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px 6px 8px; cursor: pointer; user-select: none;
+    }
+    .anim:hover { border-color: #444452; }
+    .anim.on { border-color: var(--accent); background: rgba(145, 71, 255, .14); }
+    .anim.on::after { content: '✓'; position: absolute; top: 4px; right: 7px; color: var(--accent-2); font-size: 12px; font-weight: 700; }
+    .anim-group-title {
+      grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 4px;
+      color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .anim-group-title:not(:first-child) { margin-top: 12px; }
+    .anim-group-title .btn { text-transform: none; letter-spacing: 0; font-weight: 400; padding: 2px 8px; font-size: 12px; }
+    .anim .demo-box { width: 52px; height: 52px; display: flex; align-items: center; justify-content: center; }
+    .anim .demo { width: 44px; height: 44px; object-fit: contain; }
+    .anim .demo.letters {
+      display: flex; align-items: center; justify-content: center; border-radius: 8px;
+      background: var(--accent); color: #fff; font-weight: 800; font-size: 18px;
+    }
+    .anim span { font-size: 12px; color: var(--muted); text-align: center; }
+    .anim.on span { color: var(--text); }
+
+    /* ---------- sounds ---------- */
+    .sounds {
+      max-height: 380px; overflow-y: auto; background: var(--field);
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    .sounds::-webkit-scrollbar { width: 8px; }
+    .sounds::-webkit-scrollbar-thumb { background: #3a3a46; border-radius: 4px; }
+    .sound-folder > summary {
+      display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer;
+      position: sticky; top: 0; background: #17171b; border-bottom: 1px solid var(--border);
+      list-style: none; font-weight: 600; z-index: 1;
+    }
+    .sound-folder > summary::-webkit-details-marker { display: none; }
+    .sound-folder > summary::before { content: '▸'; color: var(--dim); width: 10px; transition: transform .15s; }
+    .sound-folder[open] > summary::before { transform: rotate(90deg); }
+    .sound-folder > summary .count { color: var(--dim); font-weight: 400; flex: 1; }
+    .sound-row {
+      display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 26px;
+      border-bottom: 1px solid rgba(255, 255, 255, .03);
+    }
+    .sound-row:hover { background: rgba(255, 255, 255, .03); }
+    .sound-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sound-row .size { color: var(--dim); font-size: 12px; }
+    .sound-row.playing .name { color: var(--accent-2); }
+    .play {
+      width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border);
+      background: var(--panel-2); cursor: pointer; font-size: 10px; flex: none; color: var(--text);
+    }
+    .play:hover { border-color: var(--accent); }
+    .sound-row.playing .play { background: var(--accent); border-color: var(--accent); }
+    .sounds .note { color: var(--dim); text-align: center; padding: 24px 8px; }
+
+    /* ---------- game ---------- */
+    #gameStage { max-width: 1100px; }
+    .games { background: var(--field); border: 1px solid var(--border); border-radius: 8px; max-height: 420px; overflow-y: auto; }
+    .game-row {
+      display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+      border-bottom: 1px solid rgba(255, 255, 255, .04);
+    }
+    .game-row.current { background: rgba(145, 71, 255, .12); }
+    .game-row img, .game-row .noart { width: 36px; height: 48px; border-radius: 4px; object-fit: cover; flex: none; background: var(--panel-2); }
+    .game-row .info { flex: 1; min-width: 0; }
+    .game-row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .game-row .meta { color: var(--dim); font-size: 12px; }
+    .game-row .total { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 80px; text-align: right; }
+    .game-row .num { width: 72px; }
+    .games .note { color: var(--dim); text-align: center; padding: 24px 8px; line-height: 1.5; }
+
+    /* ---------- version & update ---------- */
+    .version {
+      background: none; border: 1px solid var(--border); border-radius: 999px; color: var(--dim);
+      font-size: 11px; font-weight: 600; padding: 1px 8px; cursor: pointer;
+    }
+    .version:hover { color: var(--text); border-color: #3d3d48; }
+    .btn-update {
+      background: rgba(46, 204, 113, .14); border-color: rgba(46, 204, 113, .55); color: #7ee2a8;
+      padding: 4px 12px; font-size: 13px; font-weight: 600; animation: glow 2.4s ease-in-out infinite;
+    }
+    .btn-update:hover:not(:disabled) { background: rgba(46, 204, 113, .25); border-color: var(--ok); }
+    @keyframes glow { 50% { box-shadow: 0 0 12px rgba(46, 204, 113, .45); } }
+    .modal-back {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, .6); z-index: 30;
+      display: flex; align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal-back[hidden] { display: none; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+      width: 100%; max-width: 620px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 10px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+    }
+    .modal h2 { font-size: 18px; }
+    .modal-sub { color: var(--muted); }
+    .notes {
+      background: var(--field); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+      white-space: pre-wrap; overflow-y: auto; min-height: 60px; max-height: 50vh; line-height: 1.5; font-size: 13px;
+    }
+    .notes .note-li { padding-left: 16px; position: relative; }
+    .notes .note-li::before { content: '•'; position: absolute; left: 4px; color: var(--accent-2); }
+    .notes .note-h { font-weight: 700; margin-top: 4px; }
+    .progress { height: 8px; background: var(--field); border-radius: 4px; overflow: hidden; border: 1px solid var(--border); }
+    .progress .bar { height: 100%; width: 0; background: var(--ok); transition: width .2s; }
+    .modal-status { color: var(--muted); min-height: 18px; }
+    .modal-status.err { color: var(--err); }
+    .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    /* ---------- console ---------- */
+    .console-bar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+    .console-bar .input { flex: 1; min-width: 200px; }
+    .console {
+      background: #0c0c0f; border: 1px solid var(--border); border-radius: var(--radius);
+      font-family: Consolas, 'Courier New', monospace; font-size: 12.5px;
+      height: calc(100vh - 260px); min-height: 300px; overflow-y: auto; padding: 10px 12px;
+    }
+    .line { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+    .line.err { color: var(--err); }
+    .line.warn { color: var(--warn); }
+    .line.chat { color: #8fa3c7; }
+    .line.emote { color: #c9a8ff; }
+    .line.greet { color: #7ee2a8; }
+    .line.panel { color: var(--dim); }
+
+    /* ---------- save bar & toasts ---------- */
+    .savebar {
+      position: fixed; left: 50%; bottom: 16px; transform: translate(-50%, 150%);
+      display: flex; align-items: center; gap: 12px;
+      background: #26262e; border: 1px solid #3a3a46; border-radius: 12px;
+      padding: 10px 12px 10px 18px; box-shadow: 0 10px 40px rgba(0, 0, 0, .5);
+      transition: transform .2s ease; z-index: 10; max-width: calc(100% - 32px);
+    }
+    .savebar.show { transform: translate(-50%, 0); }
+    .savebar .text { color: var(--muted); }
+    .savebar kbd { font-family: inherit; font-size: 11px; color: rgba(255, 255, 255, .75); border: 1px solid rgba(255, 255, 255, .35); border-radius: 4px; padding: 1px 5px; margin-left: 8px; }
+
+    .toasts { position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
+    .toast {
+      background: #26262e; border: 1px solid #3a3a46; border-left: 3px solid var(--accent);
+      border-radius: 8px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0, 0, 0, .4);
+      max-width: 340px; animation: slide .2s ease;
+    }
+    .toast.ok { border-left-color: var(--ok); }
+    .toast.err { border-left-color: var(--err); }
+    @keyframes slide { from { opacity: 0; transform: translateX(20px); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="topbar">
+      <div class="brand"><span class="brand-dot"></span>Emotes Bot
+        <button class="version" id="versionTag" type="button" title="Проверить обновления">v…</button>
+        <button class="btn btn-update" id="btnUpdate" type="button" hidden>⬆ Доступна новая версия</button>
+      </div>
+
+      <div class="status" id="status" data-state="stopped">
+        <span class="dot"></span>
+        <span class="main" id="statusMain">Остановлен</span>
+        <span class="sub" id="statusSub"></span>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btnStart">▶ Запустить</button>
+        <button class="btn" id="btnRestart">↻ Перезапустить</button>
+        <button class="btn btn-danger" id="btnStop">■ Остановить</button>
+      </div>
+    </header>
+
+    <div class="banner warn" id="banner">
+      <div class="text" id="bannerText"></div>
+      <button class="btn btn-sm" id="bannerAction"></button>
+    </div>
+
+    <nav class="tabs">
+      <button class="tab" data-tab="connection">Подключение<span class="badge" data-badge="connection"></span></button>
+      <button class="tab" data-tab="greetings">Приветствия<span class="badge" data-badge="greetings"></span></button>
+      <button class="tab" data-tab="emotes">Эмоуты<span class="badge" data-badge="emotes"></span></button>
+      <button class="tab" data-tab="game">Игра<span class="badge" data-badge="game"></span></button>
+      <button class="tab" data-tab="console">Консоль</button>
+    </nav>
+
+    <!-- ===== Подключение ===== -->
+    <section class="page" data-page="connection">
+      <div class="card">
+        <h2>Twitch</h2>
+        <p class="desc">
+          Ключи приложения нужны, чтобы загрузить эмоуты канала. Получить:
+          <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a>
+          → Create App → Redirect URL <code>http://localhost</code>.
+        </p>
+
+        <div class="field" style="margin-bottom:14px">
+          <label for="channel">Канал</label>
+          <input class="input" id="channel" data-key="channel" placeholder="имя канала или ссылка twitch.tv/…" autocomplete="off" spellcheck="false">
+          <div class="hint">Можно вставить ссылку — лишнее отрежется при сохранении.</div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="clientId">Client ID</label>
+            <input class="input" id="clientId" data-key="twitchClientId" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="clientSecret">Client Secret</label>
+            <div class="with-btn">
+              <input class="input" id="clientSecret" data-key="twitchClientSecret" type="password" autocomplete="off" spellcheck="false">
+              <button class="btn" id="toggleSecret" type="button" title="Показать / скрыть">👁</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Источники для OBS</h2>
+        <p class="desc">Добавьте в OBS как «Браузер» (Browser Source) с указанными размерами.</p>
+        <div class="source">
+          <span class="name">Эмоуты</span>
+          <code id="urlEmotes"></code>
+          <span class="size">900 × 600</span>
+          <button class="btn btn-sm" data-copy="urlEmotes">Копировать</button>
+          <a class="btn btn-sm" id="openEmotes" target="_blank" rel="noopener" style="text-decoration:none">Открыть</a>
+        </div>
+        <div class="source">
+          <span class="name">Приветствия</span>
+          <code id="urlGreeting"></code>
+          <span class="size">350 × 400</span>
+          <button class="btn btn-sm" data-copy="urlGreeting">Копировать</button>
+          <a class="btn btn-sm" id="openGreeting" target="_blank" rel="noopener" style="text-decoration:none">Открыть</a>
+        </div>
+        <div class="source">
+          <span class="name">Игра</span>
+          <code id="urlGame"></code>
+          <span class="size">1920 × 1080</span>
+          <button class="btn btn-sm" data-copy="urlGame">Копировать</button>
+          <a class="btn btn-sm" id="openGame" target="_blank" rel="noopener" style="text-decoration:none">Открыть</a>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="field" style="max-width:260px">
+          <label for="port">Порт оверлеев</label>
+          <input class="input" id="port" data-key="port" type="number" min="1024" max="65535">
+          <div class="hint">Меняйте, только если 3000 занят. Ссылки выше обновятся после сохранения.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Приветствия ===== -->
+    <section class="page" data-page="greetings">
+      <div class="split">
+        <div class="split-main">
+          <div class="card">
+            <h2>Слова-приветствия</h2>
+            <p class="desc">Первое сообщение зрителя с одним из этих слов показывает приветствие. Регистр слов не важен. Enter или запятая — добавить.</p>
+            <div class="chips" id="keywords"></div>
+          </div>
+
+          <div class="card">
+            <h2>Эмоуты приветствия</h2>
+            <p class="desc">Для каждого приветствия выбирается случайный эмоут из этого списка. Регистр важен: <code>LUL</code> и <code>lul</code> — разные эмоуты.</p>
+            <div class="picker" id="greetingPicker"></div>
+          </div>
+
+          <div class="card">
+            <h2>Текст</h2>
+            <div class="field" style="margin-bottom:14px">
+              <label for="greetTemplate">Шаблон</label>
+              <input class="input" id="greetTemplate" data-key="greetingTemplate" data-preview="greeting" placeholder="{user}" maxlength="120">
+              <div class="hint"><code>{user}</code> заменяется на имя зрителя. Например: <code>Привет, {user}!</code></div>
+            </div>
+
+            <div class="grid-2">
+              <div class="field">
+                <label for="greetFont">Шрифт</label>
+                <select class="input" id="greetFont" data-key="greetingFontFamily" data-preview="greeting"></select>
+                <div class="hint">Google-шрифты подгружаются из интернета, системные — все установленные на этом компьютере.</div>
+              </div>
+              <div class="field">
+                <label>Начертание и размер</label>
+                <div class="sentence">
+                  <input class="num" id="greetFontSize" data-key="greetingFontSize" data-preview="greeting" type="number" min="12" max="120"> px
+                  <label class="check" style="align-items:center; margin-left:8px">
+                    <input type="checkbox" id="greetBold" data-key="greetingBold" data-preview="greeting"> жирный
+                  </label>
+                </div>
+                <div class="hint">Длинные имена автоматически уменьшаются, чтобы влезть.</div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="sentence" style="gap:14px 22px">
+              <label class="swatch">Цвет текста <input type="color" id="greetColor" data-key="greetingTextColor" data-preview="greeting"></label>
+              <label class="swatch">Обводка <input type="color" id="greetOutlineColor" data-key="greetingOutlineColor" data-preview="greeting"></label>
+              <span class="sentence">толщина
+                <input class="num" id="greetOutlineWidth" data-key="greetingOutlineWidth" data-preview="greeting" type="number" min="0" max="10" step="0.5"> px</span>
+              <label class="check" style="align-items:center">
+                <input type="checkbox" id="greetShadow" data-key="greetingShadow" data-preview="greeting"> тень
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Показ</h2>
+            <div class="sentence" style="margin-bottom:6px">
+              Размер эмоута
+              <input class="num" id="greetEmoteSize" data-key="greetingEmoteSize" data-preview="greeting" type="number" min="40" max="340" step="10"> px
+              <span style="color:var(--dim)">(окно оверлея 350 × 400)</span>
+            </div>
+            <div class="sentence" style="margin-bottom:6px">
+              Показывать не меньше
+              <input class="num" id="greetDisplay" data-key="greetingDisplaySeconds" data-preview="greeting" type="number" min="1" max="120" step="0.5"> сек.
+              <span style="color:var(--dim)">— или пока играет звук, если он длиннее</span>
+            </div>
+            <div class="sentence">
+              Громкость звука
+              <input type="range" id="greetVolume" data-key="greetingVolume" min="0" max="100" step="5" style="width:180px; accent-color:var(--accent)">
+              <b id="greetVolumeValue"></b>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Появление</h2>
+            <p class="desc">Отметьте одну или несколько анимаций — каждое приветствие появится случайной из них, без повторов подряд. Клик по плитке — выбрать и сразу посмотреть в предпросмотре.</p>
+            <div class="anim-grid" id="animPicker"></div>
+            <div class="sentence" style="margin-top:10px">
+              <button class="btn btn-sm" id="btnAnimAll" type="button">Выбрать все</button>
+              <button class="btn btn-sm btn-ghost" id="btnAnimNone" type="button">Сбросить</button>
+              <span class="picker-foot" id="animFoot" style="margin:0"></span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Звуки</h2>
+            <p class="desc">К каждому приветствию играет случайный звук из папки <code>sounds</code> и всех её подпапок. Добавьте или удалите файлы (mp3, ogg, wav) и нажмите «Обновить» — бот подхватит их без перезапуска.</p>
+            <div class="sentence" style="margin-bottom:10px">
+              <span style="flex:1" id="soundsSummary">Загрузка…</span>
+              <button class="btn btn-sm" id="btnSoundsReload" type="button">↻ Обновить</button>
+              <button class="btn btn-sm" id="btnSoundsOpen" type="button">📂 Открыть в проводнике</button>
+            </div>
+            <input class="input" id="soundsFilter" placeholder="Поиск по названию…" spellcheck="false" style="margin-bottom:8px">
+            <div class="sounds" id="soundsList"></div>
+          </div>
+
+          <div class="card">
+            <h2>Сброс</h2>
+            <div class="sentence" style="margin-bottom:6px">
+              Зритель может поздороваться снова через
+              <input class="num" id="greetExpire" data-key="greetingExpireDays" type="number" min="0.01" step="0.5"> дн.
+            </div>
+            <div class="sentence">
+              Удалять файлы приветствий старых стримов через
+              <input class="num" id="oldFilesExpire" data-key="oldFilesExpireDays" type="number" min="1" step="1"> дн.
+            </div>
+            <div class="divider"></div>
+            <div class="sentence">
+              <button class="btn" id="btnResetSession">Сбросить приветствия текущего стрима</button>
+              <span style="color:var(--dim)">Все зрители смогут поздороваться заново. Нужен запущенный бот.</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="split-side">
+          <div class="card preview-card">
+            <h2>Предпросмотр</h2>
+            <p class="desc">Так приветствие будет выглядеть в OBS. Показывает несохранённые настройки, без звука.</p>
+            <div class="stage" id="greetStage" data-w="350" data-h="400">
+              <iframe id="greetFrame" src="/overlay/greeting.html?preview" title="Предпросмотр приветствия"></iframe>
+            </div>
+            <div class="sentence" style="margin-top:10px">
+              <input class="input" id="previewName" value="Зритель_123" style="flex:1; min-width:120px" spellcheck="false">
+              <button class="btn btn-primary" id="btnPreviewGreeting">Показать</button>
+            </div>
+            <label class="check" style="margin-top:8px">
+              <input type="checkbox" id="previewAuto" checked>
+              <span>Обновлять при изменении настроек</span>
+            </label>
+            <label class="check" style="margin-top:6px">
+              <input type="checkbox" id="previewHold" checked>
+              <span>Не скрывать (иначе исчезнет через заданное время, как в OBS)</span>
+            </label>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ===== Эмоуты ===== -->
+    <section class="page" data-page="emotes">
+      <div class="split split-wide">
+        <div class="split-main">
+          <div class="card">
+            <h2>Показ</h2>
+            <div class="sentence" style="margin-bottom:6px">
+              Каждый эмоут виден
+              <input class="num" id="emoteDisplay" data-key="emoteDisplaySeconds" type="number" min="1" max="120" step="0.5"> сек.
+            </div>
+            <div class="sentence">
+              Размер
+              <input class="num" id="emoteSize" data-key="emoteSize" type="number" min="24" max="600" step="10"> px
+              <span style="color:var(--dim)">(окно оверлея 900 × 600)</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Антиспам</h2>
+            <div class="sentence">
+              Не больше
+              <input class="num" id="spamLimit" data-key="emoteSpamLimit" type="number" min="1" max="100">
+              эмоутов от одного зрителя за
+              <input class="num" id="spamWindow" data-key="emoteSpamWindow" type="number" min="1" max="600">
+              сек.
+            </div>
+            <p class="desc" style="margin:6px 0 0">Сообщение, которое превышает лимит, не показывается целиком.</p>
+          </div>
+
+          <div class="card">
+            <h2>Усиление повторов</h2>
+            <label class="check" style="margin-bottom:12px">
+              <input type="checkbox" id="boostOn" data-key="emoteBoostOnSameFromDifferentUser">
+              <span>Если другой зритель отправил тот же эмоут — увеличить его и продлить показ
+                <small>Вместо нового эмоута на экране растёт уже показанный.</small></span>
+            </label>
+            <div class="sentence" id="boostRow">
+              Увеличение за каждый повтор:
+              <input class="num" id="boostScale" data-key="emoteBoostScalePercent" type="number" min="0" max="500" step="5"> %
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Чёрный список</h2>
+            <p class="desc">Эти эмоуты не показываются на экране. Регистр важен. Можно добавить любое слово, даже если такого эмоута нет в списке — нажмите Enter.</p>
+            <div class="picker" id="blacklistPicker"></div>
+          </div>
+
+          <div class="card">
+            <div class="sentence">
+              <span style="flex:1">Загружено эмоутов: <b id="emoteCount">0</b> <span id="emoteHint" style="color:var(--dim)"></span></span>
+              <button class="btn btn-sm" id="btnRefreshEmotes">Обновить список</button>
+            </div>
+          </div>
+        </div>
+
+        <aside class="split-side">
+          <div class="card preview-card">
+            <h2>Предпросмотр</h2>
+            <p class="desc">Эмоуты из чата так появятся в OBS. Учитывает несохранённые настройки и чёрный список.</p>
+            <div class="stage" id="emoteStage" data-w="900" data-h="600">
+              <iframe id="emoteFrame" src="/overlay/emotes.html?preview" title="Предпросмотр эмоутов"></iframe>
+            </div>
+            <div class="sentence" style="margin-top:10px">
+              <button class="btn btn-primary" id="btnPreviewEmote">Эмоут</button>
+              <button class="btn" id="btnPreviewBurst" title="Одно сообщение с пятью эмоутами">Сообщение ×5</button>
+              <button class="btn" id="btnPreviewBoost" title="Три зрителя подряд отправляют один эмоут">Повтор ×3</button>
+              <button class="btn btn-ghost" id="btnPreviewClear">Очистить</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ===== Игра ===== -->
+    <section class="page" data-page="game">
+      <div class="card preview-card">
+        <h2>Текущая игра</h2>
+        <p class="desc">Категория стрима на Twitch и общее время в этой игре. Таймер копится по каждой игре и продолжается, когда категория снова на неё переключается, но только во время эфира. Если с мыши и клавиатуры нет ввода дольше заданного времени, таймер встаёт на паузу. Геймпад не считается. Перетащите элемент мышью или выделите его и двигайте стрелками (Shift — по 10 px).</p>
+        <div class="stage" id="gameStage" data-w="1920" data-h="1080">
+          <iframe id="gameFrame" src="/overlay/game.html?preview" title="Предпросмотр элемента «Текущая игра»"></iframe>
+        </div>
+        <div class="sentence" style="margin-top:10px; gap:8px 14px">
+          X <input class="num" id="gameX" data-key="gameElementX" data-preview="game" type="number" min="0" max="1920">
+          Y <input class="num" id="gameY" data-key="gameElementY" data-preview="game" type="number" min="0" max="1080">
+          Масштаб <input class="num" id="gameScale" data-key="gameElementScale" data-preview="game" type="number" min="10" max="400" step="5"> %
+          <span style="flex:1"></span>
+          <button class="btn btn-sm" data-align="tl" type="button" title="Левый верхний угол">↖</button>
+          <button class="btn btn-sm" data-align="tr" type="button" title="Правый верхний угол">↗</button>
+          <button class="btn btn-sm" data-align="center" type="button" title="По центру">По центру</button>
+          <button class="btn btn-sm" data-align="bl" type="button" title="Левый нижний угол">↙</button>
+          <button class="btn btn-sm" data-align="br" type="button" title="Правый нижний угол">↘</button>
+        </div>
+        <div class="hint" style="color:var(--dim); font-size:12px; margin-top:6px" id="gamePreviewHint"></div>
+      </div>
+
+      <div class="grid-2" style="align-items:start">
+        <div>
+          <div class="card">
+            <h2>Текст</h2>
+            <div class="field" style="margin-bottom:14px">
+              <label for="gameTemplate">Шаблон (до трёх строк)</label>
+              <textarea class="input" id="gameTemplate" data-key="gameElementTemplate" data-preview="game" rows="3" maxlength="120" spellcheck="false" style="resize:vertical"></textarea>
+              <div class="hint"><code>{game}</code> — название игры, <code>{time}</code> — общее время. Например: <code>Сейчас играем: {game}</code></div>
+            </div>
+
+            <div class="grid-2">
+              <div class="field">
+                <label for="gameFont">Шрифт</label>
+                <select class="input" id="gameFont" data-key="gameFontFamily" data-preview="game"></select>
+              </div>
+              <div class="field">
+                <label>Начертание и размер</label>
+                <div class="sentence">
+                  <input class="num" id="gameFontSize" data-key="gameFontSize" data-preview="game" type="number" min="12" max="120"> px
+                  <label class="check" style="align-items:center; margin-left:8px">
+                    <input type="checkbox" id="gameBold" data-key="gameBold" data-preview="game"> жирный
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="sentence" style="gap:14px 22px">
+              <label class="swatch">Цвет текста <input type="color" id="gameColor" data-key="gameTextColor" data-preview="game"></label>
+              <label class="swatch">Обводка <input type="color" id="gameOutlineColor" data-key="gameOutlineColor" data-preview="game"></label>
+              <span class="sentence">толщина
+                <input class="num" id="gameOutlineWidth" data-key="gameOutlineWidth" data-preview="game" type="number" min="0" max="10" step="0.5"> px</span>
+              <label class="check" style="align-items:center">
+                <input type="checkbox" id="gameShadow" data-key="gameShadow" data-preview="game"> тень
+              </label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Показ</h2>
+            <label class="check" style="margin-bottom:10px">
+              <input type="checkbox" id="gameShowBoxArt" data-key="gameShowBoxArt" data-preview="game">
+              <span>Обложка категории Twitch слева от текста</span>
+            </label>
+            <label class="check" style="margin-bottom:10px">
+              <input type="checkbox" id="gameShowPaused" data-key="gameShowPaused" data-preview="game">
+              <span>Показывать паузу ⏸ <small>Таймер приглушается, когда игрок отошёл.</small></span>
+            </label>
+            <label class="check" style="margin-bottom:12px">
+              <input type="checkbox" id="gameHideWhenNoGame" data-key="gameHideWhenNoGame" data-preview="game">
+              <span>Скрывать, когда стрим не идёт</span>
+            </label>
+            <div class="sentence">
+              Пауза, если нет ввода
+              <input class="num" id="gameIdle" data-key="gameIdleMinutes" type="number" min="1" max="60" step="1"> мин.
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Время в играх</h2>
+          <p class="desc">Время можно задать вручную в формате <code>Ч:ММ</code>, например <code>12:30</code>. Применяется сразу, сохранять не нужно.</p>
+          <div class="sentence" style="margin-bottom:10px">
+            <span style="flex:1" id="gameStatus">Загрузка…</span>
+            <button class="btn btn-sm" id="btnGameRefresh" type="button">↻ Обновить</button>
+          </div>
+          <div class="games" id="gamesList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Консоль ===== -->
+    <section class="page" data-page="console">
+      <div class="console-bar">
+        <input class="input" id="logFilter" placeholder="Фильтр по тексту…">
+        <label class="check" style="align-items:center"><input type="checkbox" id="logChat" checked> чат</label>
+        <label class="check" style="align-items:center"><input type="checkbox" id="logAutoscroll" checked> автопрокрутка</label>
+        <button class="btn btn-sm" id="btnClearLog">Очистить</button>
+      </div>
+      <div class="console" id="console"></div>
+    </section>
+  </div>
+
+  <div class="savebar" id="savebar">
+    <span class="text">Есть несохранённые изменения</span>
+    <button class="btn btn-ghost" id="btnRevert">Отменить</button>
+    <button class="btn btn-primary" id="btnSave">Сохранить<kbd>Ctrl+S</kbd></button>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="modal-back" id="updateModal" hidden>
+    <div class="modal" role="dialog" aria-labelledby="updateTitle">
+      <h2 id="updateTitle">Доступна новая версия</h2>
+      <div class="modal-sub" id="updateSub"></div>
+      <div class="notes" id="updateNotes"></div>
+      <div class="progress" id="updateProgress" hidden><div class="bar" id="updateBar"></div></div>
+      <div class="modal-status" id="updateStatus"></div>
+      <div class="modal-actions">
+        <a class="btn btn-ghost" id="updateGithub" target="_blank" rel="noopener" style="text-decoration:none">Открыть на GitHub</a>
+        <span style="flex:1"></span>
+        <button class="btn" id="updateLater" type="button">Позже</button>
+        <button class="btn btn-primary" id="updateInstall" type="button">Обновить сейчас</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/overlay/fonts.js"></script>
+  <script src="/overlay/animations.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# зависимости и сборки
+node_modules/
+EmotesBotTray.exe
+release/
+release*/
+dist/
+
+# личные данные и состояние бота
+bot-config.json
+bot-config.json.bak
+.import-asked
+.update-result.json
+.env
+cache/
+greetings/
+games/
+*.log
+
+# звуки — сторонний контент, в публичный репозиторий и релизы не попадают
+sounds/
+special-sounds-packed.json
+
+# старые версии и копии, лежащие рядом
+EmotesBot_old*/
+old_version/
+
+# служебное
+.vs/
+.claude/

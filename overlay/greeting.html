@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Greeting Overlay</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 350px;
+      height: 400px;
+      overflow: hidden;
+      background: transparent;
+      font-family: Arial, sans-serif;
+    }
+
+    .greeting-container {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 99999;
+      pointer-events: none;
+      text-align: center;
+      width: 350px;
+    }
+
+    .greeting-emote {
+      width: 300px;
+      height: 300px;
+      object-fit: contain;
+      display: block;
+      margin: 0 auto;
+    }
+
+    .greeting-username {
+      margin: 15px auto 0;
+      line-height: 1.05;
+      max-width: 330px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    /* анимации появления — в animations.js (Web Animations API), применяются к .greeting-inner */
+  </style>
+  <script src="fonts.js"></script>
+  <script src="animations.js"></script>
+</head>
+<body>
+  <script>
+    // ?preview — режим предпросмотра в панели: без WebSocket, события приходят через postMessage
+    const PREVIEW = new URLSearchParams(location.search).has("preview");
+
+    const DEFAULT_STYLE = {
+      fontFamily: "Arial",
+      fontSize: 36,
+      bold: true,
+      color: "#FFFFFF",
+      outlineColor: "#000000",
+      outlineWidth: 2,
+      shadow: true,
+      emoteSize: 300,
+      template: "{user}",
+      animations: ["none"],
+    };
+    const DEFAULT_DISPLAY_MS = 6000;
+    const OUT_MS = 300;
+
+    let ws = null;
+    const greetingQueue = [];
+    let current = null; // { container, inner, audio, timer }
+    let lastAnimation = null;
+    let reconnectTimer = null;
+    let lastPingTs = Date.now();
+    let connectStartedTs = 0;
+
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connectWebSocket();
+      }, 2000);
+    }
+
+    function connectWebSocket() {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      connectStartedTs = Date.now();
+      ws = new WebSocket(`${protocol}//${window.location.host}/ws/greeting`);
+
+      ws.onopen = () => {
+        console.log("[WS] Greeting connected");
+        lastPingTs = Date.now();
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+      };
+
+      ws.onclose = () => {
+        console.log("[WS] Greeting closed, reconnecting...");
+        scheduleReconnect();
+      };
+
+      ws.onerror = (e) => {
+        console.error("[WS] Greeting error", e);
+        scheduleReconnect();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "ping") {
+            lastPingTs = Date.now();
+            return;
+          }
+          handleMessage(data);
+        } catch (err) {
+          console.error("[PARSE ERROR]", err);
+        }
+      };
+    }
+
+    function handleMessage(data) {
+      if (data.type === "greeting" && data.user) {
+        if (data.replace) {
+          // предпросмотр: сразу показываем новое, без очереди
+          greetingQueue.length = 0;
+          finishCurrent(true);
+        }
+        greetingQueue.push(data);
+        processQueue();
+      } else if (data.type === "clear") {
+        greetingQueue.length = 0;
+        finishCurrent(true);
+      }
+    }
+
+    if (PREVIEW) {
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin) return;
+        handleMessage(event.data || {});
+      });
+    } else {
+      connectWebSocket();
+
+      setInterval(() => {
+        const now = Date.now();
+        if (!ws) {
+          scheduleReconnect();
+          return;
+        }
+
+        if (ws.readyState === WebSocket.CLOSED) {
+          scheduleReconnect();
+          return;
+        }
+
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (now - connectStartedTs > 20000) {
+            console.log("[WS] Greeting connect timeout, forcing reconnect...");
+            try { ws.close(); } catch {}
+            scheduleReconnect();
+          }
+          return;
+        }
+
+        if (now - lastPingTs > 15000) {
+          console.log("[WS] Greeting heartbeat timeout, reconnecting...");
+          try { ws.close(); } catch {}
+        }
+
+        if (now - lastPingTs > 45000) {
+          console.log("[WS] Greeting stale too long, reloading page...");
+          window.location.reload();
+        }
+      }, 5000);
+    }
+
+    // Обводка через text-shadow во все стороны (работает в любом Chromium, включая OBS)
+    function buildTextShadow(style) {
+      const parts = [];
+      const w = Math.max(0, Number(style.outlineWidth) || 0);
+      if (w > 0) {
+        const steps = w <= 2 ? 8 : 16;
+        for (let i = 0; i < steps; i++) {
+          const a = (i / steps) * Math.PI * 2;
+          parts.push(`${(Math.cos(a) * w).toFixed(2)}px ${(Math.sin(a) * w).toFixed(2)}px 0 ${style.outlineColor}`);
+        }
+      }
+      if (style.shadow) parts.push("2px 3px 6px rgba(0, 0, 0, 0.85)");
+      return parts.join(", ") || "none";
+    }
+
+    function fitText(el, startSize, maxHeight) {
+      const maxWidth = 330;
+      let fontSize = startSize;
+      el.style.fontSize = fontSize + "px";
+      while (fontSize > 12 && (el.scrollWidth > maxWidth || el.scrollHeight > maxHeight)) {
+        fontSize -= 2;
+        el.style.fontSize = fontSize + "px";
+      }
+    }
+
+    function finishCurrent(immediate) {
+      if (!current) return;
+      const item = current;
+      current = null;
+      clearTimeout(item.timer);
+      if (item.audio) { item.audio.pause(); item.audio.remove(); }
+      if (!item.container) return; // ещё ждали шрифт — показывать было нечего
+      if (immediate || !item.inner.animate) {
+        item.container.remove();
+      } else {
+        item.inner.animate([{ opacity: 1 }, { opacity: 0 }], { duration: OUT_MS, easing: "ease-in", fill: "forwards" });
+        setTimeout(() => item.container.remove(), OUT_MS);
+      }
+    }
+
+    async function processQueue() {
+      if (current || greetingQueue.length === 0) return;
+
+      const data = greetingQueue.shift();
+      const style = { ...DEFAULT_STYLE, ...(data.style || {}) };
+      const weight = style.bold ? 700 : 400;
+      const item = { container: null, audio: null, timer: null };
+      current = item;
+
+      await ensureGreetingFont(style.fontFamily, weight);
+      if (current !== item) return; // пока грузился шрифт, показ отменили (предпросмотр)
+
+      const container = document.createElement("div");
+      container.className = "greeting-container";
+      const inner = document.createElement("div"); // анимируется он, а не контейнер с translate(-50%, -50%)
+      inner.className = "greeting-inner";
+      container.appendChild(inner);
+
+      // эмоута может не быть (провайдер недоступен и в кэше нет) — тогда только текст
+      const emoteSize = data.url ? Math.min(340, Math.max(40, Number(style.emoteSize) || 300)) : 0;
+      const img = document.createElement("img");
+      img.className = "greeting-emote";
+      img.style.width = img.style.height = emoteSize + "px";
+      if (data.url) img.src = data.url + (PREVIEW ? "" : "?t=" + Date.now());
+      else img.style.display = "none";
+
+      const username = document.createElement("div");
+      username.className = "greeting-username";
+      const template = String(style.template || "").trim() || "{user}";
+      username.textContent = template.replace(/\{user\}/g, data.user);
+      username.style.fontFamily = `"${style.fontFamily}", Arial, sans-serif`;
+      username.style.fontWeight = weight;
+      username.style.color = style.color;
+      username.style.textShadow = buildTextShadow(style);
+
+      if (data.url) inner.appendChild(img);
+      inner.appendChild(username);
+      document.body.appendChild(container);
+      item.container = container;
+      item.inner = inner;
+      fitText(username, Number(style.fontSize) || 36, Math.max(40, 400 - emoteSize - 25));
+
+      // случайная из выбранных анимаций (старый конфиг мог прислать одну строку animation)
+      lastAnimation = pickGreetingAnimation(style.animations || style.animation, lastAnimation);
+      playGreetingAnimation(inner, lastAnimation);
+
+      let audioDuration = 0;
+      if (data.sound) {
+        const audio = document.createElement("audio");
+        audio.src = "/" + data.sound + "?t=" + Date.now();
+        audio.volume = Math.min(1, Math.max(0, Number.isFinite(data.volume) ? data.volume : 0.7));
+        document.body.appendChild(audio);
+        item.audio = audio;
+        audio.addEventListener("loadedmetadata", () => {
+          audioDuration = audio.duration * 1000;
+        });
+        audio.play().catch(err => console.error("[AUDIO] Play failed:", err));
+      }
+
+      // Показываем не меньше заданного времени и не меньше длины звука
+      const minMs = Number.isFinite(data.displayMs) ? data.displayMs : DEFAULT_DISPLAY_MS;
+      const tick = () => {
+        if (current !== item) return;
+        const left = Math.max(minMs, audioDuration) - (Date.now() - startedAt);
+        if (left > 0) {
+          item.timer = setTimeout(tick, Math.min(left, 500));
+          return;
+        }
+        finishCurrent(false);
+        setTimeout(processQueue, OUT_MS);
+      };
+      const startedAt = Date.now();
+      item.timer = setTimeout(tick, Math.min(minMs, 500));
+    }
+  </script>
+</body>
+</html>

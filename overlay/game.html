@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Game Overlay</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background: transparent;
+      font-family: Arial, sans-serif;
+    }
+
+    .game {
+      position: absolute;
+      left: 60px;
+      top: 900px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      transform-origin: 0 0;
+      white-space: nowrap;
+      opacity: 0;
+      transition: opacity .4s ease;
+    }
+    .game.show { opacity: 1; }
+
+    .art {
+      width: 96px;
+      height: 128px;
+      flex: none;
+      border-radius: 8px;
+      object-fit: cover;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, .6);
+      background: linear-gradient(135deg, #3a2a5c, #1d1d2b);
+    }
+
+    .lines { line-height: 1.15; }
+    .time { font-variant-numeric: tabular-nums; transition: opacity .3s ease; }
+    .time.paused { opacity: .55; }
+
+    /* предпросмотр в панели: элемент можно таскать мышью */
+    body.edit .game { cursor: move; outline: 2px dashed rgba(169, 112, 255, .9); outline-offset: 6px; }
+    body.edit .game.hidden-in-obs { opacity: .35; }
+  </style>
+  <script src="fonts.js"></script>
+</head>
+<body>
+  <div class="game" id="game">
+    <img class="art" id="art" alt="" />
+    <div class="lines" id="lines"></div>
+  </div>
+  <script>
+    // ?preview — режим предпросмотра в панели: без WebSocket, события приходят через postMessage
+    const PREVIEW = new URLSearchParams(location.search).has("preview");
+    const W = 1920, H = 1080, EDGE = 40;
+
+    const DEFAULT_STYLE = {
+      x: 60, y: 900, scale: 100, template: "{game}\n{time}",
+      showBoxArt: true, showPaused: true, hideWhenNoGame: true,
+      fontFamily: "Arial", fontSize: 36, bold: true,
+      color: "#FFFFFF", outlineColor: "#000000", outlineWidth: 2, shadow: true,
+    };
+
+    const gameEl = document.getElementById("game");
+    const artEl = document.getElementById("art");
+    const linesEl = document.getElementById("lines");
+
+    let state = { game: null, seconds: 0, running: false, style: DEFAULT_STYLE };
+    let baseTs = Date.now(); // когда пришли seconds — дальше оверлей тикает сам
+    let timeEls = [];
+    let renderToken = 0;
+
+    if (PREVIEW) document.body.classList.add("edit");
+
+    // Обводка через text-shadow во все стороны — как в greeting.html
+    function buildTextShadow(style) {
+      const parts = [];
+      const w = Math.max(0, Number(style.outlineWidth) || 0);
+      if (w > 0) {
+        const steps = w <= 2 ? 8 : 16;
+        for (let i = 0; i < steps; i++) {
+          const a = (i / steps) * Math.PI * 2;
+          parts.push(`${(Math.cos(a) * w).toFixed(2)}px ${(Math.sin(a) * w).toFixed(2)}px 0 ${style.outlineColor}`);
+        }
+      }
+      if (style.shadow) parts.push("2px 3px 6px rgba(0, 0, 0, 0.85)");
+      return parts.join(", ") || "none";
+    }
+
+    function formatTime(seconds) {
+      const s = Math.max(0, Math.floor(seconds));
+      return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+    }
+
+    function currentSeconds() {
+      return state.seconds + (state.running ? (Date.now() - baseTs) / 1000 : 0);
+    }
+
+    function updateTime() {
+      const style = state.style;
+      const paused = !!state.game && !state.running;
+      const text = formatTime(currentSeconds()) + (paused && style.showPaused ? " ⏸" : "");
+      for (const el of timeEls) {
+        if (el.textContent !== text) el.textContent = text;
+        el.classList.toggle("paused", paused && style.showPaused);
+      }
+    }
+
+    function boxArtUrl(template) {
+      return String(template).replace("{width}", "288").replace("{height}", "384");
+    }
+
+    async function render() {
+      const token = ++renderToken;
+      const style = { ...DEFAULT_STYLE, ...(state.style || {}) };
+      state.style = style;
+      const weight = style.bold ? 700 : 400;
+      await ensureGreetingFont(style.fontFamily, weight);
+      if (token !== renderToken) return;
+
+      const game = state.game;
+      const hidden = !game && style.hideWhenNoGame;
+
+      // строки шаблона: {game} — название, {time} — общий таймер (отдельный span, его обновляет updateTime)
+      linesEl.replaceChildren();
+      timeEls = [];
+      const lines = String(style.template || "{game}").split("\n").filter(l => l.trim());
+      for (const line of lines) {
+        const row = document.createElement("div");
+        line.split(/(\{time\})/).forEach(part => {
+          if (part === "{time}") {
+            const span = document.createElement("span");
+            span.className = "time";
+            timeEls.push(span);
+            row.appendChild(span);
+          } else if (part) {
+            row.appendChild(document.createTextNode(part.replace(/\{game\}/g, game ? game.name : "—")));
+          }
+        });
+        linesEl.appendChild(row);
+      }
+      linesEl.style.fontFamily = `"${style.fontFamily}", Arial, sans-serif`;
+      linesEl.style.fontSize = (Number(style.fontSize) || 36) + "px";
+      linesEl.style.fontWeight = weight;
+      linesEl.style.color = style.color;
+      linesEl.style.textShadow = buildTextShadow(style);
+
+      artEl.style.display = style.showBoxArt ? "" : "none";
+      if (style.showBoxArt) {
+        const src = game && game.boxArt ? boxArtUrl(game.boxArt) : "";
+        if (artEl.getAttribute("src") !== src) {
+          if (src) artEl.src = src;
+          else artEl.removeAttribute("src");
+        }
+      }
+
+      gameEl.style.left = style.x + "px";
+      gameEl.style.top = style.y + "px";
+      gameEl.style.transform = `scale(${(Number(style.scale) || 100) / 100})`;
+      // в OBS скрыт, в предпросмотре — полупрозрачный, чтобы его можно было двигать
+      gameEl.classList.toggle("show", !hidden || PREVIEW);
+      gameEl.classList.toggle("hidden-in-obs", hidden);
+      updateTime();
+    }
+
+    function handleMessage(data) {
+      if (data.type === "game") {
+        state = { game: data.game || null, seconds: Number(data.seconds) || 0, running: !!data.running, style: data.style || state.style };
+        baseTs = Date.now();
+        render();
+      } else if (data.type === "game-align" && PREVIEW) {
+        align(data.where);
+      }
+    }
+
+    setInterval(updateTime, 250);
+
+    // ---------------------------------------------------------------- редактор позиции (только ?preview)
+
+    function elementSize() {
+      const scale = (Number(state.style.scale) || 100) / 100;
+      return { w: gameEl.offsetWidth * scale, h: gameEl.offsetHeight * scale };
+    }
+
+    function moveTo(x, y) {
+      const { w, h } = elementSize();
+      x = Math.round(Math.min(Math.max(0, W - w), Math.max(0, x)));
+      y = Math.round(Math.min(Math.max(0, H - h), Math.max(0, y)));
+      state.style = { ...state.style, x, y };
+      gameEl.style.left = x + "px";
+      gameEl.style.top = y + "px";
+      parent.postMessage({ type: "game-move", x, y }, location.origin);
+    }
+
+    function align(where) {
+      const { w, h } = elementSize();
+      const pos = {
+        center: [(W - w) / 2, (H - h) / 2],
+        tl: [EDGE, EDGE], tr: [W - w - EDGE, EDGE],
+        bl: [EDGE, H - h - EDGE], br: [W - w - EDGE, H - h - EDGE],
+      }[where];
+      if (pos) moveTo(pos[0], pos[1]);
+    }
+
+    if (PREVIEW) {
+      let drag = null;
+      gameEl.addEventListener("pointerdown", (e) => {
+        drag = { dx: e.clientX - state.style.x, dy: e.clientY - state.style.y };
+        try { gameEl.setPointerCapture(e.pointerId); } catch {}
+        e.preventDefault();
+      });
+      gameEl.addEventListener("pointermove", (e) => {
+        if (drag) moveTo(e.clientX - drag.dx, e.clientY - drag.dy);
+      });
+      gameEl.addEventListener("pointerup", () => { drag = null; });
+      gameEl.addEventListener("pointercancel", () => { drag = null; });
+      window.addEventListener("keydown", (e) => {
+        const step = e.shiftKey ? 10 : 1;
+        const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+        if (!d) return;
+        e.preventDefault();
+        moveTo(state.style.x + d[0], state.style.y + d[1]);
+      });
+
+      window.addEventListener("message", (event) => {
+        if (event.origin !== location.origin) return;
+        handleMessage(event.data || {});
+      });
+      render();
+    } else {
+      connectWebSocket();
+    }
+
+    // ---------------------------------------------------------------- WebSocket (как в greeting.html)
+
+    function connectWebSocket() {
+      let ws = null;
+      let reconnectTimer = null;
+      let lastPingTs = Date.now();
+      let connectStartedTs = 0;
+
+      function scheduleReconnect() {
+        if (reconnectTimer) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, 2000);
+      }
+
+      function connect() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        connectStartedTs = Date.now();
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws/game`);
+        ws.onopen = () => {
+          lastPingTs = Date.now();
+          if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        };
+        ws.onclose = () => scheduleReconnect();
+        ws.onerror = () => scheduleReconnect();
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "ping") { lastPingTs = Date.now(); return; }
+            handleMessage(data);
+          } catch (err) {
+            console.error("[PARSE ERROR]", err);
+          }
+        };
+      }
+
+      connect();
+
+      setInterval(() => {
+        const now = Date.now();
+        if (!ws || ws.readyState === WebSocket.CLOSED) { scheduleReconnect(); return; }
+        if (ws.readyState !== WebSocket.OPEN) {
+          if (now - connectStartedTs > 20000) { try { ws.close(); } catch {} scheduleReconnect(); }
+          return;
+        }
+        if (now - lastPingTs > 15000) { try { ws.close(); } catch {} }
+        if (now - lastPingTs > 45000) window.location.reload();
+      }, 5000);
+    }
+  </script>
+</body>
+</html>
