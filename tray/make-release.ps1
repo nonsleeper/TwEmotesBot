@@ -5,10 +5,11 @@
 # User data already in release\app (config, cache, greetings, sounds, log) is kept across rebuilds.
 # -Clean makes a release to hand out: only sounds are kept, personal data (config with keys, cache,
 #   greetings, game playtime, log) is moved out to release-userdata-<date>\ next to release\ (not deleted).
-# -OutDir builds somewhere else (publish-release.ps1 uses dist\EmotesBot); -NoSounds ships no sounds and no
-#   special-sounds pack (third-party content - not for the public GitHub release).
-# Usage: powershell -ExecutionPolicy Bypass -File tray\make-release.ps1 [-Clean] [-OutDir <dir>] [-NoSounds]
-param([switch]$Clean, [string]$OutDir, [switch]$NoSounds)
+# -OutDir builds somewhere else (publish-release.ps1 uses dist\EmotesBot); -NoSounds ships no sounds\ folder
+#   (third-party content - the public GitHub release only gets an empty one); -NoSpecialSounds also leaves out
+#   special-sounds-packed.json (the GitHub release includes it).
+# Usage: powershell -ExecutionPolicy Bypass -File tray\make-release.ps1 [-Clean] [-OutDir <dir>] [-NoSounds] [-NoSpecialSounds]
+param([switch]$Clean, [string]$OutDir, [switch]$NoSounds, [switch]$NoSpecialSounds)
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $out = if ($OutDir) { [IO.Path]::GetFullPath($OutDir) } else { Join-Path $root "release" }
@@ -35,7 +36,7 @@ Copy-Item $nodeSrc "$out\runtime\node.exe"
 Copy-Item "$root\EmotesBotTray.exe" $out
 Copy-Item "$root\server.js", "$root\web-server.js", "$root\system-fonts.js", "$root\idle-monitor.js", "$root\updates.js",
           "$root\updater.ps1", "$root\package.json", "$root\package-lock.json", "$root\bot-config.example.json" $app
-if (-not $NoSounds) { Copy-Item "$root\special-sounds-packed.json" $app }
+if (-not $NoSpecialSounds) { Copy-Item "$root\special-sounds-packed.json" $app }
 Copy-Item "$root\overlay", "$root\web-gui" $app -Recurse
 
 # Restore user data (with -Clean only sounds; the rest goes to release-userdata-<date>\); project sounds if none

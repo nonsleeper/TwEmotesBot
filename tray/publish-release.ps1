@@ -2,7 +2,7 @@
 #   1. поднимите "version" в package.json и опишите изменения в CHANGELOG.md (раздел "## <версия>")
 #   2. закоммитьте изменения
 #   3. powershell -ExecutionPolicy Bypass -File tray\publish-release.ps1
-# Скрипт собирает чистый релиз без звуков в dist\EmotesBot, упаковывает в dist\EmotesBot-v<версия>.zip,
+# Скрипт собирает чистый релиз (без папки sounds, но с паком спецзвуков) в dist\EmotesBot, упаковывает в dist\EmotesBot-v<версия>.zip,
 # отправляет коммиты на GitHub и создаёт релиз v<версия> с этим архивом и описанием из CHANGELOG.md.
 # -DryRun — только собрать архив, ничего не публиковать.
 param([switch]$DryRun)
