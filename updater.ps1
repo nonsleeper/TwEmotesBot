@@ -5,27 +5,35 @@
 # Что делает: штатно останавливает бота -> закрывает трей -> распаковывает архив -> делает копию текущих
 # файлов программы -> заменяет их новыми, НЕ трогая данные пользователя -> запускает трей заново.
 # Если что-то пошло не так — возвращает файлы из копии. Результат пишет в app\.update-result.json (его читает панель).
+#
+# Работу всегда доводит установщик ИЗ НОВОЙ версии: распаковав архив, этот скрипт передаёт управление
+# app\updater.ps1 из архива, если тот отличается (-Chained). Так исправления самого обновления действуют сразу.
 param(
   [Parameter(Mandatory = $true)][string]$Zip,
   [Parameter(Mandatory = $true)][string]$InstallDir,
   [int]$TrayPid = 0,
   [int]$PanelPort = 3001,
   [string]$FromVersion = "",
-  [string]$ToVersion = ""
+  [string]$ToVersion = "",
+  [switch]$Chained,          # запущен предыдущим установщиком, архив уже распакован в $StageDir
+  [string]$StageDir = ""
 )
 $ErrorActionPreference = "Stop"
 $log = Join-Path $env:TEMP "emotesbot-update.log"
 function Log($msg) { Add-Content -Path $log -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg) -Encoding UTF8 }
 
-# Данные пользователя в app\ — их обновление никогда не перезаписывает
+# Данные пользователя в app\ — их обновление никогда не перезаписывает.
+# Пак спецзвуков (special-sounds-packed.json) сюда не входит: он приходит с релизом и обновляется вместе
+# с программой (прежний остаётся в .update-backup).
 $userData = @("bot-config.json", "bot-config.json.bak", ".import-asked", ".update-result.json", "cache", "greetings",
-              "games", "sounds", "special-sounds-packed.json", "tray.log")
+              "games", "sounds", "tray.log")
 
 $app = Join-Path $InstallDir "app"
 $backup = Join-Path $InstallDir ".update-backup"
-$stage = Join-Path $env:TEMP ("emotesbot-update-" + [guid]::NewGuid())
+$stage = if ($StageDir) { $StageDir } else { Join-Path $env:TEMP ("emotesbot-update-" + [guid]::NewGuid()) }
 $result = @{ ok = $false; from = $FromVersion; to = $ToVersion; error = $null; at = (Get-Date).ToString("s") }
 $copied = $false
+$handedOver = $false
 
 function Stop-Everything {
   # 1) бот сохраняет приветствия и время игр и выходит сам
@@ -64,14 +72,28 @@ function Copy-ProgramFiles($from, $to) {
 }
 
 try {
-  Log "=== update $FromVersion -> $ToVersion, dir=$InstallDir, zip=$Zip"
+  Log ("=== update $FromVersion -> $ToVersion, dir=$InstallDir, zip=$Zip" + $(if ($Chained) { " (updater from the new version)" } else { "" }))
   if (-not (Test-Path (Join-Path $app "web-server.js"))) { throw "в $InstallDir нет app\web-server.js" }
 
-  Expand-Archive -Path $Zip -DestinationPath $stage -Force
+  if (-not $StageDir) { Expand-Archive -Path $Zip -DestinationPath $stage -Force }
   $exe = Get-ChildItem $stage -Recurse -Filter "EmotesBotTray.exe" | Select-Object -First 1
   if (-not $exe -or -not (Test-Path (Join-Path $exe.DirectoryName "app\web-server.js"))) { throw "в архиве нет EmotesBotTray.exe и app\web-server.js" }
   $src = $exe.DirectoryName
   Log "archive ok: $src"
+
+  # передать работу установщику из новой версии, если он другой
+  $newUpdater = Join-Path $src "app\updater.ps1"
+  if (-not $Chained -and (Test-Path $newUpdater) -and
+      ((Get-FileHash $newUpdater).Hash -ne (Get-FileHash $PSCommandPath).Hash)) {
+    $handover = Join-Path $env:TEMP ("emotesbot-updater-" + [guid]::NewGuid() + ".ps1")
+    Copy-Item $newUpdater $handover
+    Log "handing over to the updater from the new version"
+    $handedOver = $true
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $handover -Zip $Zip -InstallDir $InstallDir `
+      -TrayPid $TrayPid -PanelPort $PanelPort -FromVersion $FromVersion -ToVersion $ToVersion -Chained -StageDir $stage
+    Remove-Item $handover -Force -ErrorAction SilentlyContinue
+    return
+  }
 
   Stop-Everything
   Log "processes stopped"
@@ -107,8 +129,11 @@ catch {
   }
 }
 finally {
-  try { $result | ConvertTo-Json | Set-Content (Join-Path $app ".update-result.json") -Encoding UTF8 } catch {}
-  try { Start-Process (Join-Path $InstallDir "EmotesBotTray.exe") -WorkingDirectory $InstallDir; Log "tray started" } catch { Log "start failed: $($_.Exception.Message)" }
-  Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item $Zip -Force -ErrorAction SilentlyContinue
+  # если работу доделал установщик из новой версии, итог, запуск трея и уборка — на нём
+  if (-not $handedOver) {
+    try { $result | ConvertTo-Json | Set-Content (Join-Path $app ".update-result.json") -Encoding UTF8 } catch {}
+    try { Start-Process (Join-Path $InstallDir "EmotesBotTray.exe") -WorkingDirectory $InstallDir; Log "tray started" } catch { Log "start failed: $($_.Exception.Message)" }
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $Zip -Force -ErrorAction SilentlyContinue
+  }
 }
