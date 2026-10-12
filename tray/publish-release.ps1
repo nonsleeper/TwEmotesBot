@@ -16,10 +16,18 @@ $tag = "v$version"
 $gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
 if (-not $gh -and (Test-Path "$env:ProgramFiles\GitHub CLI\gh.exe")) { $gh = "$env:ProgramFiles\GitHub CLI\gh.exe" }
 
+# git и gh пишут прогресс и сообщения в stderr, а Windows PowerShell при $ErrorActionPreference = Stop
+# считает это ошибкой скрипта. Поэтому запускаем их с Continue и смотрим на код выхода.
+function Invoke-Native([scriptblock]$Command) {
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try { & $Command 2>&1 | ForEach-Object { "$_" } } finally { $ErrorActionPreference = $prev }
+}
+
 if (-not $DryRun) {
   if (-not $gh) { throw "Не найден GitHub CLI (gh). Установите: winget install GitHub.cli" }
   if (git status --porcelain) { throw "Есть незакоммиченные изменения — сначала закоммитьте их." }
-  & $gh release view $tag *> $null
+  Invoke-Native { & $gh release view $tag } | Out-Null
   if ($LASTEXITCODE -eq 0) { throw "Релиз $tag уже есть. Поднимите version в package.json." }
 }
 
@@ -44,8 +52,9 @@ if ($DryRun) { "Dry run - nothing published."; return }
 
 $notesFile = Join-Path $env:TEMP "emotesbot-release-notes.md"
 [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
-git push origin HEAD
+Invoke-Native { git push origin HEAD }
 if ($LASTEXITCODE -ne 0) { throw "git push не удался" }
-& $gh release create $tag $zip --title "Emotes Bot $tag" --notes-file $notesFile --target (git rev-parse HEAD)
+$commit = git rev-parse HEAD
+Invoke-Native { & $gh release create $tag $zip --title "TwEmotesBot $tag" --notes-file $notesFile --target $commit }
 if ($LASTEXITCODE -ne 0) { throw "gh release create не удался" }
 "Published $tag"
