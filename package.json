@@ -21,12 +21,17 @@
   "license": "ISC",
   "type": "commonjs",
   "emotesBot": {
-    "updateRepo": ""
+    "updateRepo": "nonsleeper/TwEmotesBot"
   },
   "dependencies": {
     "express": "^5.2.1",
     "node-fetch": "^3.3.2",
     "tmi.js": "^1.8.5",
     "ws": "^8.19.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nonsleeper/TwEmotesBot.git"
+  },
+  "homepage": "https://github.com/nonsleeper/TwEmotesBot#readme"
 }
