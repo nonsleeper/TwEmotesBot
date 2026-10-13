@@ -1,13 +1,20 @@
-// «Эдит» на вебке: под бит музыки бот дёргает источник камеры в OBS (зум, тряска, наклон — через обрезку,
-// масштаб и поворот элемента сцены; вспышки, цвет, моно — через фильтр «Коррекция цвета») и бросает эмоуты
-// из чата на вебку (оверлей edit.html). Биты — по уровню громкости выбранного аудиоисточника OBS.
+// «Эдит» на вебке: под бит музыки бот дёргает источник камеры в OBS (зум, тряска, наклон, вращение, отражение —
+// через обрезку, масштаб и поворот элемента сцены; цвет, вспышки, подкраска, мерцание — фильтром «Коррекция цвета»;
+// инверт, постер, тепловизор и другие — фильтром «Применить LUT» со сгенерированными таблицами; резкость — «Резкость»)
+// и бросает эмоуты из чата в оверлей эмоутов. Биты — по уровню громкости выбранного аудиоисточника OBS.
 // Всё через встроенный в OBS сервер WebSocket (obs.js), плагины не нужны.
 const fs = require("fs");
 const path = require("path");
 const { ObsClient } = require("./obs");
 
 const FILTER_NAME = "TwEmotesBot: эдит";
-const NEUTRAL_COLOR = { hue_shift: 0, saturation: 0, contrast: 0, brightness: 0 };
+const NEUTRAL_COLOR = { hue_shift: 0, saturation: 0, contrast: 0, brightness: 0, opacity: 1, color_multiply: 0xffffffff };
+// Фильтры, которые бот вешает на камеру (встроенные в OBS) и включает только на время эдита
+const FILTERS = {
+  color: { name: FILTER_NAME, kind: "color_filter_v2", neutral: NEUTRAL_COLOR },
+  lut: { name: "TwEmotesBot: LUT", kind: "clut_filter", neutral: { clut_amount: 0 } },
+  sharp: { name: "TwEmotesBot: резкость", kind: "sharpness_filter_v2", neutral: { sharpness: 0 } },
+};
 const FRAME_MS = 33; // ~30 кадров в секунду в OBS
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
@@ -170,11 +177,16 @@ class BeatTracker {
 
 // ---------------------------------------------------------------- эффекты
 
-// u — доля пути от бита до следующего (0..1), d — направление (±1). Значения — как в motion() офлайн-рендера,
-// но без того, что встроенный OBS не умеет (RGB-сдвиг, глитч, блюр). ox/oy — доля кадра, tilt — градусы,
-// hue — градусы, sat/contrast — множители (1 = как есть), bright — добавка яркости (-1..1).
+// u — доля пути от бита до следующего (0..1), d — направление (±1), rnd(i) — случайное 0..1, своё на каждый бит
+// (одинаковое для одного i в пределах бита). ox/oy — доля кадра, tilt — градусы, spin — градусы (без учёта силы),
+// hue — градусы, sat/contrast — множители (1 = как есть), bright — добавка яркости (-1..1),
+// lut/lutAmount — цветовая таблица (см. LUTS) и её сила, sharp — резкость (0..1), tint/tintAmount — подкраска,
+// opacity — прозрачность вебки, flip — отражение по горизонтали.
+// Движения — как в motion() офлайн-рендера; RGB-сдвиг и блюр без плагинов OBS недоступны.
 const ex = Math.exp;
+const TINTS = [[1, 0.25, 0.3], [0.3, 0.5, 1], [0.4, 1, 0.5], [1, 0.3, 1], [1, 0.8, 0.3]];
 const EFFECTS = {
+  // ---- движение
   punch: (u) => ({ zoom: 1 + 0.32 * ex(-u * 7), ox: Math.sin(u * 48) * 0.012 * ex(-u * 4), oy: Math.cos(u * 32) * 0.008 * ex(-u * 4) }),
   smash: (u, d) => ({
     zoom: 1.12 + 0.55 * ex(-u * 9),
@@ -186,13 +198,46 @@ const EFFECTS = {
     ox: Math.sin(u * 56) * 0.028 * (1 - u * 0.35), oy: Math.cos(u * 44) * 0.018 * (1 - u * 0.35), tilt: 2 * Math.sin(u * 18),
   }),
   tilt: (u, d) => ({ zoom: 1.12, tilt: d * 7 * Math.sin(u * Math.PI) }),
-  flash: (u) => ({ zoom: 1.1 + 0.35 * ex(-u * 8), ox: Math.sin(u * 36) * 0.01 * (1 - u), bright: u < 0.06 ? 0.85 : u < 0.14 ? 0.3 : 0 }),
-  hue: (u, d) => ({ zoom: 1.08 + 0.25 * ex(-u * 6), hue: d * (80 + 200 * u), sat: 1.55 }),
-  mono: (u) => ({ zoom: 1.15 + 0.25 * ex(-u * 7), sat: 0, contrast: 1.6 }),
-  strobe: (u) => ({ zoom: 1.12, bright: Math.floor(u * 8) % 2 ? 0.55 : 0 }),
   zoomspin: (u, d) => ({ zoom: 1.1 + 0.4 * Math.abs(Math.sin(u * Math.PI)), tilt: d * 14 * Math.sin(u * Math.PI * 2) }),
+  spin: (u, d) => ({ zoom: 1.2, spin: d * 360 * (1 - Math.pow(1 - u, 3)) }), // полный оборот за бит
+  flip: (u) => ({ zoom: 1.12 + 0.3 * ex(-u * 7), flip: u < 0.5 }),
+  glitch: (u, d, rnd) => {
+    const slot = Math.floor(u * 14);
+    const on = rnd(slot) > 0.45;
+    return {
+      zoom: 1.12 + (on ? rnd(slot + 50) * 0.15 : 0),
+      ox: on ? (rnd(slot + 100) - 0.5) * 0.09 : 0, oy: on ? (rnd(slot + 200) - 0.5) * 0.05 : 0,
+      hue: on && rnd(slot + 300) > 0.6 ? (rnd(slot + 400) - 0.5) * 180 : 0, contrast: 1.3,
+      sharp: on ? 0.8 : 0, lut: "invert", lutAmount: on && rnd(slot + 500) > 0.85 ? 1 : 0,
+    };
+  },
+  // ---- цвет и фильтры
+  flash: (u) => ({ zoom: 1.1 + 0.35 * ex(-u * 8), ox: Math.sin(u * 36) * 0.01 * (1 - u), bright: u < 0.06 ? 0.85 : u < 0.14 ? 0.3 : 0 }),
+  strobe: (u) => ({ zoom: 1.12, bright: Math.floor(u * 8) % 2 ? 0.55 : 0 }),
+  flicker: (u) => ({ zoom: 1.12, opacity: Math.floor(u * 10) % 2 ? 0.25 : 1 }),
+  hue: (u, d) => ({ zoom: 1.08 + 0.25 * ex(-u * 6), hue: d * (80 + 200 * u), sat: 1.55 }),
+  tint: (u, d, rnd) => ({ zoom: 1.1 + 0.28 * ex(-u * 7), tint: TINTS[Math.floor(rnd(0) * TINTS.length)], tintAmount: 0.85 * ex(-u * 3) }),
+  mono: (u) => ({ zoom: 1.15 + 0.25 * ex(-u * 7), sat: 0, contrast: 1.6 }),
+  crunch: (u) => ({ zoom: 1.18 + 0.2 * ex(-u * 7), sharp: ex(-u * 3), contrast: 1.45, sat: 1.3 }),
+  invert: (u) => ({ zoom: 1 + 0.3 * ex(-u * 7), lut: "invert", lutAmount: u < 0.45 ? 1 : 0 }),
+  xerox: (u) => ({ zoom: 1.12 + 0.25 * ex(-u * 8), lut: "xerox", lutAmount: u < 0.6 ? 1 : 0 }),
+  poster: (u) => ({ zoom: 1.14 + 0.15 * ex(-u * 6), lut: "poster", lutAmount: 1, contrast: 1.15 }),
+  sepia: (u) => ({ zoom: 1.1 + 0.2 * ex(-u * 6), lut: "sepia", lutAmount: 1, bright: u < 0.05 ? 0.4 : 0 }),
+  duotone: (u, d) => ({ zoom: 1.12 + 0.22 * ex(-u * 6), lut: d > 0 ? "duotonePink" : "duotoneCyan", lutAmount: 1 }),
+  thermal: (u) => ({ zoom: 1.15 + 0.2 * ex(-u * 6), lut: "thermal", lutAmount: 1 }),
+  nightvision: (u) => ({ zoom: 1.18, ox: Math.sin(u * 40) * 0.006, lut: "nightvision", lutAmount: 1, bright: u < 0.08 ? 0.3 : 0 }),
 };
 const EFFECT_KEYS = Object.keys(EFFECTS);
+const LUT_EFFECTS = new Set(["glitch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"]);
+const SHARP_EFFECTS = new Set(["glitch", "crunch"]);
+
+// Случайные числа на бит: одинаковые для одного i, пока идёт этот бит (иначе глитч дрожал бы каждый кадр)
+function beatRandom(seed) {
+  return (i) => {
+    const x = Math.sin(seed * 9973.13 + i * 12.9898) * 43758.5453;
+    return x - Math.floor(x);
+  };
+}
 
 // Сила эффектов (100% = как в пресете): масштабируем отклонение от «как есть»
 function scaleLook(look, k) {
@@ -200,17 +245,25 @@ function scaleLook(look, k) {
     zoom: 1 + ((look.zoom || 1) - 1) * k,
     ox: (look.ox || 0) * k,
     oy: (look.oy || 0) * k,
-    tilt: (look.tilt || 0) * k,
+    tilt: (look.tilt || 0) * k + (look.spin || 0), // полный оборот не масштабируем — иначе в конце бита рывок
     hue: (look.hue || 0) * k,
     sat: 1 + ((look.sat ?? 1) - 1) * k,
     contrast: 1 + ((look.contrast ?? 1) - 1) * k,
     bright: (look.bright || 0) * k,
     box: 1 + ((look.box ?? 1) - 1) * k,
+    lut: look.lut || null,
+    lutAmount: clamp((look.lutAmount || 0) * k, 0, 1),
+    sharp: clamp((look.sharp || 0) * k, 0, 1),
+    tint: look.tint || null,
+    tintAmount: clamp((look.tintAmount || 0) * k, 0, 1),
+    opacity: clamp(1 - (1 - (look.opacity ?? 1)) * k, 0.05, 1),
+    flip: Boolean(look.flip),
   };
 }
 
 // Эффект → настройки элемента сцены. Зум и тряска — через обрезку (кадр «наезжает» внутри той же рамки:
-// масштаб растёт ровно настолько, насколько уменьшилась видимая часть), наклон — поворот вокруг центра рамки.
+// масштаб растёт ровно настолько, насколько уменьшилась видимая часть), наклон — поворот вокруг центра рамки,
+// пульс рамки — сама рамка больше/меньше вокруг центра, отражение — отрицательный масштаб, центр тот же.
 function buildTransform(T, look) {
   const W = T.sourceWidth;
   const H = T.sourceHeight;
@@ -230,7 +283,8 @@ function buildTransform(T, look) {
     cropBottom: Math.round(H - (cy + h / 2)),
   };
   const bounded = T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE";
-  const box = Math.max(0.5, look.box || 1); // «пульс рамки»: сам источник на экране больше/меньше
+  const box = Math.max(0.5, look.box || 1);
+  const flip = look.flip ? -1 : 1;
   let Dw, Dh;
   if (bounded) {
     Dw = T.boundsWidth;
@@ -239,14 +293,15 @@ function buildTransform(T, look) {
       out.boundsWidth = T.boundsWidth * box;
       out.boundsHeight = T.boundsHeight * box;
     }
+    if (flip < 0) out.scaleX = -T.scaleX;
   } else {
-    out.scaleX = T.scaleX * (w0 / (W - out.cropLeft - out.cropRight)) * box;
+    out.scaleX = T.scaleX * (w0 / (W - out.cropLeft - out.cropRight)) * box * flip;
     out.scaleY = T.scaleY * (h0 / (H - out.cropTop - out.cropBottom)) * box;
     Dw = w0 * T.scaleX;
     Dh = h0 * T.scaleY;
   }
-  const geo = centerOf(T, Dw, Dh);           // центр исходной рамки — он остаётся на месте
-  const grown = centerOf(T, Dw * box, Dh * box); // вектор от точки привязки до центра для новой рамки
+  const geo = centerOf(T, Dw, Dh);                  // центр исходной рамки — он остаётся на месте
+  const grown = centerOf(T, Dw * box * flip, Dh * box); // вектор от точки привязки до центра для новой рамки
   const rotation = T.rotation + (look.tilt || 0);
   const r = (rotation * Math.PI) / 180;
   out.rotation = rotation;
@@ -270,14 +325,72 @@ function centerOf(T, Dw, Dh) {
   };
 }
 
+// Цвет OBS хранит как ABGR в одном числе
+const abgr = ([r, g, b], a = 1) =>
+  ((Math.round(a * 255) << 24) | (Math.round(b * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(r * 255)) >>> 0;
+
 function colorSettings(look) {
-  let hue = ((look.hue % 360) + 540) % 360 - 180;
+  const hue = ((look.hue % 360) + 540) % 360 - 180;
+  const mul = look.tint && look.tintAmount > 0.01
+    ? abgr(look.tint.map(c => 1 + (c - 1) * look.tintAmount))
+    : 0xffffffff;
   return {
     hue_shift: Math.round(hue * 10) / 10,
     saturation: Math.round(clamp(look.sat - 1, -1, 5) * 1000) / 1000,
     contrast: Math.round(clamp((look.contrast - 1) * 1.5, -4, 4) * 1000) / 1000,
     brightness: Math.round(clamp(look.bright, -1, 1) * 1000) / 1000,
+    opacity: Math.round(look.opacity * 100) / 100,
+    color_multiply: mul,
   };
+}
+
+// ---------------------------------------------------------------- цветовые таблицы (LUT) для «Применить LUT»
+
+// Встроенный фильтр OBS «Применить LUT» понимает текстовые .cube — генерируем свои при запуске бота
+const luma = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const mix = (c0, c1, t) => c0.map((v, i) => v + (c1[i] - v) * t);
+function gradient(stops, x) {
+  for (let i = 1; i < stops.length; i++) {
+    if (x <= stops[i][0]) return mix(stops[i - 1][1], stops[i][1], (x - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]));
+  }
+  return stops[stops.length - 1][1];
+}
+const LUTS = {
+  invert: (r, g, b) => [1 - r, 1 - g, 1 - b],
+  xerox: (r, g, b) => { const v = smooth(0.42, 0.58, luma(r, g, b)); return [v, v, v]; },
+  poster: (r, g, b) => {
+    const L = luma(r, g, b);
+    return [r, g, b].map(c => Math.round(clamp(L + (c - L) * 1.4, 0, 1) * 3) / 3);
+  },
+  sepia: (r, g, b) => [0.393 * r + 0.769 * g + 0.189 * b, 0.349 * r + 0.686 * g + 0.168 * b, 0.272 * r + 0.534 * g + 0.131 * b],
+  duotonePink: (r, g, b) => mix([0.08, 0.02, 0.25], [1, 0.45, 0.75], smooth(0, 1, luma(r, g, b))),
+  duotoneCyan: (r, g, b) => mix([0.02, 0.05, 0.2], [0.3, 1, 0.95], smooth(0, 1, luma(r, g, b))),
+  thermal: (r, g, b) => gradient([
+    [0, [0, 0, 0.1]], [0.25, [0.25, 0, 0.6]], [0.5, [0.9, 0, 0.3]], [0.7, [1, 0.5, 0]], [0.85, [1, 0.9, 0.1]], [1, [1, 1, 1]],
+  ], luma(r, g, b)),
+  nightvision: (r, g, b) => { const L = Math.min(1, luma(r, g, b) * 1.4 + 0.05); return [0.08 * L, 0.95 * Math.pow(L, 0.9), 0.12 * L]; },
+};
+
+function writeLuts(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  const N = 17;
+  const files = {};
+  for (const [name, fn] of Object.entries(LUTS)) {
+    const lines = [`TITLE "TwEmotesBot ${name}"`, `LUT_3D_SIZE ${N}`];
+    for (let bi = 0; bi < N; bi++) {
+      for (let gi = 0; gi < N; gi++) {
+        for (let ri = 0; ri < N; ri++) { // в .cube быстрее всего меняется красный
+          const out = fn(ri / (N - 1), gi / (N - 1), bi / (N - 1)).map(v => clamp(v, 0, 1).toFixed(5));
+          lines.push(out.join(" "));
+        }
+      }
+    }
+    const file = path.join(dir, `${name}.cube`);
+    fs.writeFileSync(file, lines.join("\n") + "\n", "utf8");
+    files[name] = file;
+  }
+  return files;
 }
 
 // ---------------------------------------------------------------- сеанс эдита
@@ -290,6 +403,12 @@ class EditController {
     this.restoreFile = path.join(dataDir, "edit-restore.json");
     this.obs = new ObsClient();
     this.tracker = new BeatTracker();
+    try {
+      this.luts = writeLuts(path.join(dataDir, "luts"));
+    } catch (err) {
+      this.luts = {};
+      log(`[EDIT] Could not write LUT files: ${err.message}`);
+    }
     this.cfg = null;
     this.session = null;
     this.cooldownUntil = 0;
@@ -419,16 +538,35 @@ class EditController {
     return search(currentProgramSceneName, false, 0);
   }
 
-  async ensureFilter() {
-    try {
-      await this.obs.request("GetSourceFilter", { sourceName: this.cfg.camera, filterName: FILTER_NAME });
-    } catch (err) {
-      if (err.code !== 600) throw err; // 600 — ResourceNotFound: фильтра ещё нет
-      await this.obs.request("CreateSourceFilter", {
-        sourceName: this.cfg.camera, filterName: FILTER_NAME, filterKind: "color_filter_v2", filterSettings: NEUTRAL_COLOR,
-      });
-      this.log(`[EDIT] Added color filter "${FILTER_NAME}" to "${this.cfg.camera}"`);
+  // Какие фильтры нужны выбранным эффектам: цвет — всегда, LUT и резкость — только если есть такие эффекты
+  neededFilters() {
+    const keys = ["color"];
+    if (this.cfg.effects.some(e => LUT_EFFECTS.has(e))) keys.push("lut");
+    if (this.cfg.effects.some(e => SHARP_EFFECTS.has(e))) keys.push("sharp");
+    return keys;
+  }
+
+  async ensureFilters(keys) {
+    for (const key of keys) {
+      const f = FILTERS[key];
+      try {
+        await this.obs.request("GetSourceFilter", { sourceName: this.cfg.camera, filterName: f.name });
+      } catch (err) {
+        if (err.code !== 600) throw err; // 600 — ResourceNotFound: фильтра ещё нет
+        await this.obs.request("CreateSourceFilter", {
+          sourceName: this.cfg.camera, filterName: f.name, filterKind: f.kind, filterSettings: f.neutral,
+        });
+        this.log(`[EDIT] Added filter "${f.name}" (${f.kind}) to "${this.cfg.camera}"`);
+      }
     }
+  }
+
+  filterRequests(keys, enabled) {
+    const cam = this.cfg.camera;
+    return keys.flatMap(key => [
+      { requestType: "SetSourceFilterSettings", requestData: { sourceName: cam, filterName: FILTERS[key].name, filterSettings: FILTERS[key].neutral, overlay: true } },
+      { requestType: "SetSourceFilterEnabled", requestData: { sourceName: cam, filterName: FILTERS[key].name, filterEnabled: enabled } },
+    ]);
   }
 
   // Старт по команде (проверяет паузу) или из панели (force — без паузы)
@@ -454,8 +592,9 @@ class EditController {
     };
     // если бот упадёт посреди эдита — при следующем подключении вернём как было
     fs.writeFileSync(this.restoreFile, JSON.stringify({ ...item, original }), "utf8");
-    await this.ensureFilter();
-    await this.obs.request("SetSourceFilterEnabled", { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterEnabled: true });
+    const filters = this.neededFilters();
+    await this.ensureFilters(filters);
+    await this.obs.batch(this.filterRequests(filters, true));
 
     let canvas = { w: 1920, h: 1080 };
     try {
@@ -470,7 +609,8 @@ class EditController {
       item, T, original, by,
       startedAt: Date.now(),
       endsAt: Date.now() + (duration || this.cfg.duration) * 1000,
-      beat: null, effect: "punch", dir: 1, lastColor: null, chatTriggered: !force,
+      beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force,
+      filters, lastLutKey: null, lastSharp: null,
     };
     this.overlay({ type: "edit-start", canvas, rect: { cx: geo.cx, cy: geo.cy, w: geo.w, h: geo.h, rotation: T.rotation } });
     this.timer = setInterval(() => this.frame(), FRAME_MS);
@@ -495,8 +635,7 @@ class EditController {
       try {
         await this.obs.batch([
           { requestType: "SetSceneItemTransform", requestData: { ...s.item, sceneItemTransform: s.original } },
-          { requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterSettings: NEUTRAL_COLOR, overlay: true } },
-          { requestType: "SetSourceFilterEnabled", requestData: { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterEnabled: false } },
+          ...this.filterRequests(s.filters, false),
         ]);
         removeFile(this.restoreFile);
       } catch (err) {
@@ -511,7 +650,8 @@ class EditController {
     const saved = JSON.parse(fs.readFileSync(this.restoreFile, "utf8"));
     await this.obs.request("SetSceneItemTransform", { sceneName: saved.sceneName, sceneItemId: saved.sceneItemId, sceneItemTransform: saved.original });
     if (this.cfg && this.cfg.camera) {
-      await this.obs.request("SetSourceFilterEnabled", { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterEnabled: false }).catch(() => {});
+      // каких-то фильтров может и не быть — ошибки отдельных запросов пакет не прерывают
+      await this.obs.batch(this.filterRequests(Object.keys(FILTERS), false)).catch(() => {});
     }
     removeFile(this.restoreFile);
     this.log("[EDIT] Camera position restored after an interrupted edit");
@@ -530,6 +670,7 @@ class EditController {
       const pool = this.cfg.effects.length > 1 ? this.cfg.effects.filter(e => e !== s.effect) : this.cfg.effects;
       s.effect = pool[Math.floor(Math.random() * pool.length)];
       s.dir = Math.random() < 0.5 ? -1 : 1;
+      s.seed = Math.random();
       if (this.cfg.emotes) {
         const emotes = this.emotePool();
         if (emotes.length) this.overlay({ type: "edit-beat", period: pos.period, emotes: emotes.slice(0, 3), effect: s.effect });
@@ -538,7 +679,7 @@ class EditController {
 
     // между битами (и в тишине) эффект затухает; поверх — лёгкий «дрейф», как в рендере
     const u = pos ? pos.u : 2;
-    const base = u <= 1.15 ? EFFECTS[s.effect](Math.min(u, 1), s.dir) : { zoom: 1.04 };
+    const base = u <= 1.15 ? EFFECTS[s.effect](Math.min(u, 1), s.dir, beatRandom(s.seed)) : { zoom: 1.04 };
     const t = (now - s.startedAt) / 1000;
     base.zoom = Math.max(base.zoom || 1, 1.04);
     // зум-удар на каждый бит под любым эффектом; если эффект сам зумит сильнее — остаётся его зум
@@ -560,6 +701,24 @@ class EditController {
       s.lastColor = color;
       requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterSettings: color, overlay: true } });
     }
+    // LUT: файл таблицы меняем только вместе с эффектом (OBS перечитывает его), силу — ступенями по 0.1
+    if (s.filters.includes("lut")) {
+      const file = look.lut && this.luts[look.lut];
+      const amount = file ? Math.round(look.lutAmount * 10) / 10 : 0;
+      const key = amount ? `${file}|${amount}` : "off";
+      if (key !== s.lastLutKey) {
+        s.lastLutKey = key;
+        const settings = amount ? { image_path: file, clut_amount: amount } : { clut_amount: 0 };
+        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTERS.lut.name, filterSettings: settings, overlay: true } });
+      }
+    }
+    if (s.filters.includes("sharp")) {
+      const sharp = Math.round(look.sharp * 20) / 20;
+      if (sharp !== s.lastSharp) {
+        s.lastSharp = sharp;
+        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTERS.sharp.name, filterSettings: { sharpness: sharp }, overlay: true } });
+      }
+    }
     if (!requests.length) return;
     this.busy = true;
     this.obs.batch(requests).catch(() => {}).finally(() => { this.busy = false; });
@@ -575,4 +734,4 @@ class EditController {
   }
 }
 
-module.exports = { EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS };
+module.exports = { EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };

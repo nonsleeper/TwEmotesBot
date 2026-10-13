@@ -359,6 +359,8 @@
 
     /* ---------- edit ---------- */
     .eff-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .eff-group { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
+    .eff-group:first-child { margin-top: 0; }
     .eff {
       display: flex; flex-direction: column; gap: 2px; padding: 10px 12px 10px 34px; position: relative; cursor: pointer;
       background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
@@ -897,15 +899,30 @@
             <h2>Эффекты</h2>
             <p class="desc">На каждый бит — случайный из отмеченных, без повторов подряд.</p>
             <div class="eff-grid">
+              <div class="eff-group">Движение</div>
               <label class="eff" title="зум-удар в бит"><input type="checkbox" data-list="editEffects" value="punch"><b>Удар</b><small>зум-удар в бит</small></label>
               <label class="eff" title="сильный удар со вспышкой и тряской"><input type="checkbox" data-list="editEffects" value="smash"><b>Смэш</b><small>сильный удар со вспышкой и тряской</small></label>
               <label class="eff" title="картинку трясёт весь бит"><input type="checkbox" data-list="editEffects" value="shake"><b>Тряска</b><small>картинку трясёт весь бит</small></label>
               <label class="eff" title="плавный наклон рамки"><input type="checkbox" data-list="editEffects" value="tilt"><b>Наклон</b><small>плавный наклон рамки</small></label>
-              <label class="eff" title="белая вспышка на ударе"><input type="checkbox" data-list="editEffects" value="flash"><b>Вспышка</b><small>белая вспышка на ударе</small></label>
-              <label class="eff" title="сдвиг цвета и насыщенность"><input type="checkbox" data-list="editEffects" value="hue"><b>Цвет</b><small>сдвиг цвета и насыщенность</small></label>
-              <label class="eff" title="чёрно-белое и контраст"><input type="checkbox" data-list="editEffects" value="mono"><b>Моно</b><small>чёрно-белое и контраст</small></label>
-              <label class="eff" title="мигание яркостью"><input type="checkbox" data-list="editEffects" value="strobe"><b>Стробоскоп</b><small>мигание яркостью</small></label>
               <label class="eff" title="наезд с покачиванием"><input type="checkbox" data-list="editEffects" value="zoomspin"><b>Зум с поворотом</b><small>наезд с покачиванием</small></label>
+              <label class="eff" title="полный оборот вебки за бит"><input type="checkbox" data-list="editEffects" value="spin"><b>Вращение</b><small>полный оборот вебки за бит</small></label>
+              <label class="eff" title="вебка зеркалится на полбита"><input type="checkbox" data-list="editEffects" value="flip"><b>Отражение</b><small>вебка зеркалится на полбита</small></label>
+              <label class="eff" title="рывки, вспышки цвета и инверта"><input type="checkbox" data-list="editEffects" value="glitch"><b>Глитч</b><small>рывки, вспышки цвета и инверта</small></label>
+              <div class="eff-group">Цвет и фильтры</div>
+              <label class="eff" title="белая вспышка на ударе"><input type="checkbox" data-list="editEffects" value="flash"><b>Вспышка</b><small>белая вспышка на ударе</small></label>
+              <label class="eff" title="мигание яркостью"><input type="checkbox" data-list="editEffects" value="strobe"><b>Стробоскоп</b><small>мигание яркостью</small></label>
+              <label class="eff" title="вебка мигает прозрачностью"><input type="checkbox" data-list="editEffects" value="flicker"><b>Мерцание</b><small>вебка мигает прозрачностью</small></label>
+              <label class="eff" title="сдвиг цвета и насыщенность"><input type="checkbox" data-list="editEffects" value="hue"><b>Цвет</b><small>сдвиг цвета и насыщенность</small></label>
+              <label class="eff" title="заливка случайным цветом"><input type="checkbox" data-list="editEffects" value="tint"><b>Подкраска</b><small>заливка случайным цветом</small></label>
+              <label class="eff" title="чёрно-белое и контраст"><input type="checkbox" data-list="editEffects" value="mono"><b>Моно</b><small>чёрно-белое и контраст</small></label>
+              <label class="eff" title="пережатая резкость и контраст"><input type="checkbox" data-list="editEffects" value="crunch"><b>Резкость</b><small>пережатая резкость и контраст</small></label>
+              <label class="eff" title="негатив на полбита"><input type="checkbox" data-list="editEffects" value="invert"><b>Инверт</b><small>негатив на полбита</small></label>
+              <label class="eff" title="чёрно-белое в два цвета"><input type="checkbox" data-list="editEffects" value="xerox"><b>Ксерокс</b><small>чёрно-белое в два цвета</small></label>
+              <label class="eff" title="мало цветов, как постер"><input type="checkbox" data-list="editEffects" value="poster"><b>Постер</b><small>мало цветов, как постер</small></label>
+              <label class="eff" title="старое фото"><input type="checkbox" data-list="editEffects" value="sepia"><b>Сепия</b><small>старое фото</small></label>
+              <label class="eff" title="розовый или бирюзовый в два тона"><input type="checkbox" data-list="editEffects" value="duotone"><b>Дуотон</b><small>розовый или бирюзовый в два тона</small></label>
+              <label class="eff" title="цвета тепловизора"><input type="checkbox" data-list="editEffects" value="thermal"><b>Тепловизор</b><small>цвета тепловизора</small></label>
+              <label class="eff" title="зелёный прибор ночного видения"><input type="checkbox" data-list="editEffects" value="nightvision"><b>Ночное видение</b><small>зелёный прибор ночного видения</small></label>
             </div>
             <label class="check" style="margin-top:12px">
               <input type="checkbox" id="editAlwaysPunch" data-key="editAlwaysPunch">

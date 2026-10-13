@@ -67,7 +67,7 @@ let config = {
   editCooldown: 120,
   editWho: ["broadcaster", "moderator", "vip"],
   editIntensity: 100,
-  editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
+  editEffects: ["punch", "smash", "shake", "tilt", "zoomspin", "spin", "flip", "glitch", "flash", "strobe", "flicker", "hue", "tint", "mono", "crunch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"],
   editEmotes: true,
   editLatencyMs: 60,
   editShowBeat: false,
