@@ -263,10 +263,40 @@ class EditController {
       effects: (Array.isArray(cfg.editEffects) ? cfg.editEffects : EFFECT_KEYS).filter(k => EFFECTS[k]),
       emotes: cfg.editEmotes !== false,
       latency: clamp(Number(cfg.editLatencyMs) || 0, 0, 500),
+      showBeat: cfg.editShowBeat === true,
     };
     if (!this.cfg.effects.length) this.cfg.effects = ["punch"];
     if (this.cfg.enabled) this.obs.configure({ host: cfg.obsHost, port: cfg.obsPort, password: cfg.obsPassword });
     else this.obs.disconnect();
+    this.updateBeatIndicator();
+  }
+
+  // ---- индикатор бита в оверлее (для проверки, как бот слышит музыку): «beat-tick» на каждый бит,
+  // который использует эдит, и «beat-status» дважды в секунду (есть ли звук, темп, найдена ли сетка)
+  beatStatus() {
+    const show = Boolean(this.cfg && this.cfg.enabled && this.cfg.showBeat);
+    if (!show) return { type: "beat-status", show: false };
+    const pos = this.tracker.position(Date.now() + this.cfg.latency);
+    return { type: "beat-status", show: true, active: Boolean(pos), bpm: pos ? Math.round(pos.bpm) : null, locked: pos ? pos.locked : false };
+  }
+
+  updateBeatIndicator() {
+    clearInterval(this.beatTimer);
+    this.overlay(this.beatStatus());
+    if (!this.beatStatus().show) return;
+    let lastStatusAt = 0;
+    this.beatTimer = setInterval(() => {
+      const now = Date.now();
+      const pos = this.tracker.position(now + this.cfg.latency);
+      if (pos && pos.index !== this.tickBeat) {
+        this.tickBeat = pos.index;
+        this.overlay({ type: "beat-tick", locked: pos.locked, bpm: Math.round(pos.bpm), period: pos.period });
+      }
+      if (now - lastStatusAt > 500) {
+        lastStatusAt = now;
+        this.overlay(this.beatStatus());
+      }
+    }, 15);
   }
 
   state() {
@@ -472,6 +502,7 @@ class EditController {
 
   // При выключении бота: вернуть камеру и дождаться ответа OBS (не дольше timeoutMs)
   async shutdown(timeoutMs = 1500) {
+    clearInterval(this.beatTimer);
     if (this.session) {
       await Promise.race([this.endSession("бот выключается", { restore: true }), new Promise(r => setTimeout(r, timeoutMs))]);
     }

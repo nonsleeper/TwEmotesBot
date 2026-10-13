@@ -69,7 +69,8 @@ let config = {
   editIntensity: 100,
   editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
   editEmotes: true,
-  editLatencyMs: 60
+  editLatencyMs: 60,
+  editShowBeat: false
 };
 
 // Загрузка из bot-config.json если существует
@@ -198,7 +199,7 @@ const app = express();
 app.use(express.json());
 
 app.use((req, res, next) => {
-  if (req.url !== "/api/game/state") console.log(`[HTTP] ${req.method} ${req.url}`); // панель опрашивает его постоянно
+  if (req.url !== "/api/game/state" && req.url !== "/api/edit/state") console.log(`[HTTP] ${req.method} ${req.url}`); // панель опрашивает их постоянно
   next();
 });
 
@@ -383,6 +384,7 @@ let lastEditStart = null; // для подключившегося посред�
 wssEdit.on("connection", (ws) => {
   console.log("[WS] Edit overlay connected");
   if (edit.session && lastEditStart) ws.send(JSON.stringify(lastEditStart));
+  ws.send(JSON.stringify(edit.beatStatus()));
 });
 const editOverlay = broadcastEdit;
 edit.overlay = (data) => {
