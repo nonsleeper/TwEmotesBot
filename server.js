@@ -70,7 +70,8 @@ let config = {
   editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
   editEmotes: true,
   editLatencyMs: 60,
-  editShowBeat: false
+  editShowBeat: false,
+  editAlwaysPunch: true
 };
 
 // Загрузка из bot-config.json если существует

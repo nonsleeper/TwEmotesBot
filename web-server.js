@@ -68,7 +68,8 @@ const DEFAULT_CONFIG = {
   editEffects: ["punch", "smash", "shake", "tilt", "flash", "hue", "mono", "strobe", "zoomspin"],
   editEmotes: true,
   editLatencyMs: 60,
-  editShowBeat: false
+  editShowBeat: false,
+  editAlwaysPunch: true
 };
 
 let serverProcess = null;
@@ -229,7 +230,8 @@ function sanitizeConfig(input) {
       : DEFAULT_CONFIG.editEffects.slice(),
     editEmotes: src.editEmotes !== false,
     editLatencyMs: clamp(num(src.editLatencyMs, DEFAULT_CONFIG.editLatencyMs, { int: true }), 0, 500),
-    editShowBeat: src.editShowBeat === true
+    editShowBeat: src.editShowBeat === true,
+    editAlwaysPunch: src.editAlwaysPunch !== false
   };
 }
 

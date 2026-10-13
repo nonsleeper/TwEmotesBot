@@ -264,6 +264,7 @@ class EditController {
       emotes: cfg.editEmotes !== false,
       latency: clamp(Number(cfg.editLatencyMs) || 0, 0, 500),
       showBeat: cfg.editShowBeat === true,
+      alwaysPunch: cfg.editAlwaysPunch !== false,
     };
     if (!this.cfg.effects.length) this.cfg.effects = ["punch"];
     if (this.cfg.enabled) this.obs.configure({ host: cfg.obsHost, port: cfg.obsPort, password: cfg.obsPassword });
@@ -483,6 +484,8 @@ class EditController {
     const base = u <= 1.15 ? EFFECTS[s.effect](Math.min(u, 1), s.dir) : { zoom: 1.04 };
     const t = (now - s.startedAt) / 1000;
     base.zoom = Math.max(base.zoom || 1, 1.04);
+    // зум-удар на каждый бит под любым эффектом; если эффект сам зумит сильнее — остаётся его зум
+    if (this.cfg.alwaysPunch && pos && u <= 1.15) base.zoom = Math.max(base.zoom, 1 + 0.32 * Math.exp(-Math.min(u, 1) * 7));
     base.ox = (base.ox || 0) + Math.sin(t * 2.4) * 0.004;
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
     const look = scaleLook(base, this.cfg.intensity);
