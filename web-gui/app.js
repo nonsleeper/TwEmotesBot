@@ -40,7 +40,7 @@ const KEY_TAB = {
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
   editEnabled: 'edit', obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
   editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
-  editIntensity: 'edit', editEffects: 'edit', editEmotes: 'edit', editLatencyMs: 'edit', editShowBeat: 'edit', editAlwaysPunch: 'edit',
+  editIntensity: 'edit', editEffects: 'edit', editEmotes: 'edit', editLatencyMs: 'edit', editShowBeat: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
 };
 
 const state = {

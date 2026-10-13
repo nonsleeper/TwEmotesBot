@@ -69,7 +69,9 @@ const DEFAULT_CONFIG = {
   editEmotes: true,
   editLatencyMs: 60,
   editShowBeat: false,
-  editAlwaysPunch: true
+  editAlwaysPunch: true,
+  editBoxPulse: true,
+  editBoxPulseAmount: 12
 };
 
 let serverProcess = null;
@@ -231,7 +233,9 @@ function sanitizeConfig(input) {
     editEmotes: src.editEmotes !== false,
     editLatencyMs: clamp(num(src.editLatencyMs, DEFAULT_CONFIG.editLatencyMs, { int: true }), 0, 500),
     editShowBeat: src.editShowBeat === true,
-    editAlwaysPunch: src.editAlwaysPunch !== false
+    editAlwaysPunch: src.editAlwaysPunch !== false,
+    editBoxPulse: src.editBoxPulse !== false,
+    editBoxPulseAmount: clamp(num(src.editBoxPulseAmount, DEFAULT_CONFIG.editBoxPulseAmount, { int: true }), 0, 60)
   };
 }
 

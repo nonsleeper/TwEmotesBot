@@ -157,6 +157,7 @@ function scaleLook(look, k) {
     sat: 1 + ((look.sat ?? 1) - 1) * k,
     contrast: 1 + ((look.contrast ?? 1) - 1) * k,
     bright: (look.bright || 0) * k,
+    box: 1 + ((look.box ?? 1) - 1) * k,
   };
 }
 
@@ -181,22 +182,28 @@ function buildTransform(T, look) {
     cropBottom: Math.round(H - (cy + h / 2)),
   };
   const bounded = T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE";
+  const box = Math.max(0.5, look.box || 1); // «пульс рамки»: сам источник на экране больше/меньше
   let Dw, Dh;
   if (bounded) {
     Dw = T.boundsWidth;
     Dh = T.boundsHeight; // в рамке OBS сам растягивает обрезанное до прежнего размера
+    if (box !== 1) {
+      out.boundsWidth = T.boundsWidth * box;
+      out.boundsHeight = T.boundsHeight * box;
+    }
   } else {
-    out.scaleX = T.scaleX * (w0 / (W - out.cropLeft - out.cropRight));
-    out.scaleY = T.scaleY * (h0 / (H - out.cropTop - out.cropBottom));
+    out.scaleX = T.scaleX * (w0 / (W - out.cropLeft - out.cropRight)) * box;
+    out.scaleY = T.scaleY * (h0 / (H - out.cropTop - out.cropBottom)) * box;
     Dw = w0 * T.scaleX;
     Dh = h0 * T.scaleY;
   }
-  const geo = centerOf(T, Dw, Dh);
+  const geo = centerOf(T, Dw, Dh);           // центр исходной рамки — он остаётся на месте
+  const grown = centerOf(T, Dw * box, Dh * box); // вектор от точки привязки до центра для новой рамки
   const rotation = T.rotation + (look.tilt || 0);
   const r = (rotation * Math.PI) / 180;
   out.rotation = rotation;
-  out.positionX = geo.cx - (geo.vx * Math.cos(r) - geo.vy * Math.sin(r));
-  out.positionY = geo.cy - (geo.vx * Math.sin(r) + geo.vy * Math.cos(r));
+  out.positionX = geo.cx - (grown.vx * Math.cos(r) - grown.vy * Math.sin(r));
+  out.positionY = geo.cy - (grown.vx * Math.sin(r) + grown.vy * Math.cos(r));
   return out;
 }
 
@@ -265,6 +272,7 @@ class EditController {
       latency: clamp(Number(cfg.editLatencyMs) || 0, 0, 500),
       showBeat: cfg.editShowBeat === true,
       alwaysPunch: cfg.editAlwaysPunch !== false,
+      boxPulse: cfg.editBoxPulse !== false ? clamp(Number(cfg.editBoxPulseAmount ?? 12), 0, 60) / 100 : 0,
     };
     if (!this.cfg.effects.length) this.cfg.effects = ["punch"];
     if (this.cfg.enabled) this.obs.configure({ host: cfg.obsHost, port: cfg.obsPort, password: cfg.obsPassword });
@@ -394,6 +402,7 @@ class EditController {
     const original = {
       positionX: T.positionX, positionY: T.positionY, rotation: T.rotation, scaleX: T.scaleX, scaleY: T.scaleY,
       cropLeft: T.cropLeft, cropRight: T.cropRight, cropTop: T.cropTop, cropBottom: T.cropBottom,
+      ...(T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE" ? { boundsWidth: T.boundsWidth, boundsHeight: T.boundsHeight } : {}),
     };
     // если бот упадёт посреди эдита — при следующем подключении вернём как было
     fs.writeFileSync(this.restoreFile, JSON.stringify({ ...item, original }), "utf8");
@@ -486,6 +495,11 @@ class EditController {
     base.zoom = Math.max(base.zoom || 1, 1.04);
     // зум-удар на каждый бит под любым эффектом; если эффект сам зумит сильнее — остаётся его зум
     if (this.cfg.alwaysPunch && pos && u <= 1.15) base.zoom = Math.max(base.zoom, 1 + 0.32 * Math.exp(-Math.min(u, 1) * 7));
+    // пульс рамки: на бит источник подрастает и отпружинивает обратно (с лёгким недолётом перед следующим битом)
+    if (this.cfg.boxPulse && pos && u <= 1.15) {
+      const uu = Math.min(u, 1);
+      base.box = 1 + this.cfg.boxPulse * Math.exp(-uu * 5) * Math.cos(uu * Math.PI * 1.6);
+    }
     base.ox = (base.ox || 0) + Math.sin(t * 2.4) * 0.004;
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
     const look = scaleLook(base, this.cfg.intensity);

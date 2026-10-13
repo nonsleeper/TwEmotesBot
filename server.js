@@ -71,7 +71,9 @@ let config = {
   editEmotes: true,
   editLatencyMs: 60,
   editShowBeat: false,
-  editAlwaysPunch: true
+  editAlwaysPunch: true,
+  editBoxPulse: true,
+  editBoxPulseAmount: 12
 };
 
 // Загрузка из bot-config.json если существует
