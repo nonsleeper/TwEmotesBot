@@ -22,6 +22,15 @@ function removeFile(file) {
 // Уровни громкости приходят из OBS ~20 раз в секунду. Ищем удары (резкий рост уровня), по ним — темп и фазу
 // сетки битов, и дальше предсказываем удары по сетке (как beat_grid в офлайн-рендере), а не ждём каждый —
 // так эффект попадает в бит несмотря на редкие данные и задержку.
+// Сетке не верим вслепую: в тишине (конец трека, пауза) биты прекращаются и сетка сбрасывается, а если удары
+// перестали в неё попадать (сменился темп, трек без паузы) — она снимается. Пока сетки нет, биты идут прямо
+// по скачкам громкости.
+const SILENCE_ABS = 0.02;      // почти ноль — тишина в любом случае
+const SILENCE_REL = 0.12;      // или тише 12% от обычной громкости этой музыки (затухание в конце трека)
+const SILENCE_STOP_MS = 350;   // через столько тишины биты прекращаются
+const SILENCE_RESET_MS = 1200; // ...а через столько сетка забывается — новый трек считается с нуля
+const ONSET_WINDOW_MS = 8000;  // по скольким последним ударам считаем темп
+
 class BeatTracker {
   constructor() { this.reset(); }
 
@@ -31,22 +40,45 @@ class BeatTracker {
     this.onsetCount = 0;
     this.prev = 0;
     this.lastOnset = -1e9;
-    this.lastLoud = -1e9;
+    this.quietSince = 0; // с какого момента тихо (null — звучит)
+    this.loudRef = 0;    // обычная громкость музыки, медленное среднее за ~10 с
     this.period = 0;
     this.phase = 0;
     this.locked = false;
     this.level = 0;
   }
 
+  dropGrid() {
+    this.onsets = [];
+    this.period = 0;
+    this.locked = false;
+  }
+
+  isQuiet(level) {
+    return level < SILENCE_ABS || (this.loudRef > 0 && level < this.loudRef * SILENCE_REL);
+  }
+
   push(level, t) {
     this.level = level;
+    if (level >= SILENCE_ABS) this.loudRef = this.loudRef ? this.loudRef * 0.995 + level * 0.005 : level;
+
+    const quiet = this.isQuiet(level);
+    if (quiet) {
+      if (this.quietSince === null) this.quietSince = t;
+      if (t - this.quietSince > SILENCE_RESET_MS && (this.onsets.length || this.locked)) this.dropGrid();
+    } else {
+      this.quietSince = null;
+    }
+
     const flux = Math.max(0, level - this.prev);
     this.prev = level;
     this.samples.push({ t, level, flux });
     while (this.samples.length && t - this.samples[0].t > 3000) this.samples.shift();
-    if (level > 0.015) this.lastLoud = t;
-    if (this.samples.length < 10) return;
 
+    // удары перестали приходить (тихая часть, пропала бочка) — сетку снимаем, а не стучим по памяти
+    if (this.locked && t - this.lastOnset > Math.max(this.period * 4, 1600)) this.locked = false;
+
+    if (quiet || this.samples.length < 10) return;
     const n = this.samples.length;
     const meanFlux = this.samples.reduce((s, x) => s + x.flux, 0) / n;
     const sdFlux = Math.sqrt(this.samples.reduce((s, x) => s + (x.flux - meanFlux) ** 2, 0) / n);
@@ -55,13 +87,34 @@ class BeatTracker {
       this.lastOnset = t;
       this.onsetCount++;
       this.onsets.push(t);
-      while (this.onsets.length && t - this.onsets[0] > 12000) this.onsets.shift();
+      while (this.onsets.length && t - this.onsets[0] > ONSET_WINDOW_MS) this.onsets.shift();
       this.estimate(t);
     }
   }
 
+  // доля ударов, попавших в сетку (не дальше tolerance мс от её бита)
+  onGridShare(times, period, phase, tolerance = 60) {
+    if (!times.length) return 0;
+    return times.filter(t => {
+      let d = (t - phase) % period;
+      if (d < 0) d += period;
+      return Math.min(d, period - d) < tolerance;
+    }).length / times.length;
+  }
+
   // Темп: период (80–180 BPM), под который лучше всего ложатся интервалы между ударами; фаза — сдвиг сетки
   estimate(now) {
+    // свежие удары не ложатся в нынешнюю сетку — скорее всего, другой трек: старые удары забываем
+    if (this.locked) {
+      // строже, чем при поиске: у близких темпов (96 и 128) часть ударов совпадает случайно
+      const fresh = this.onsets.filter(t => now - t < 2500);
+      if (fresh.length >= 3 && this.onGridShare(fresh, this.period, this.phase, 40) < 0.6) {
+        this.onsets = fresh;
+        this.period = 0;
+        this.locked = false;
+      }
+    }
+
     const o = this.onsets;
     if (o.length < 5) { this.locked = false; return; }
     let bestP = 0;
@@ -94,27 +147,22 @@ class BeatTracker {
       if (fit > bestFit) { bestFit = fit; bestPhase = phi; }
     }
 
-    const recent = o.filter(t => now - t < 8000);
-    const onGrid = recent.filter(t => {
-      let d = (t - bestPhase) % bestP;
-      if (d < 0) d += bestP;
-      return Math.min(d, bestP - d) < 60;
-    }).length;
     this.period = bestP;
     this.phase = bestPhase;
-    this.locked = recent.length >= 5 && onGrid / recent.length >= 0.55;
+    this.locked = o.length >= 5 && this.onGridShare(o, bestP, bestPhase) >= 0.55;
   }
 
   // Где мы относительно битов в момент t: index — номер бита, u — доля пути до следующего (0..1)
   position(t) {
-    if (t - this.lastLoud > 1500) return null; // тишина — эффектов нет
+    if (this.quietSince !== null && t - this.quietSince > SILENCE_STOP_MS) return null; // тишина — эффектов нет
     if (this.locked && this.period) {
       const k = Math.floor((t - this.phase) / this.period);
       return { index: `g${k}`, u: (t - this.phase - k * this.period) / this.period, period: this.period, bpm: 60000 / this.period, locked: true };
     }
+    // сетки нет — бит прямо по скачкам громкости
     if (!this.onsets.length) return null;
     const last = this.onsets[this.onsets.length - 1];
-    const gaps = this.onsets.slice(-8).map((t, i, a) => (i ? t - a[i - 1] : 0)).filter(g => g > 0).sort((a, b) => a - b);
+    const gaps = this.onsets.slice(-8).map((x, i, a) => (i ? x - a[i - 1] : 0)).filter(g => g > 0).sort((a, b) => a - b);
     const period = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 500;
     return { index: `o${this.onsetCount}`, u: (t - last) / period, period, bpm: 60000 / period, locked: false };
   }
