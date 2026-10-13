@@ -391,9 +391,31 @@ wssEdit.on("connection", (ws) => {
 });
 const editOverlay = broadcastEdit;
 edit.overlay = (data) => {
+  if (data.type === "edit-beat") { sendEditEmotes(data); return; } // эмоуты эдита — в обычный оверлей эмоутов
   if (data.type === "edit-start") lastEditStart = data;
   editOverlay(data);
 };
+
+// На бит эдита — 1–3 эмоута из чата в оверлей эмоутов (emotes.html), коротко (~2 бита) и без «буста»:
+// иначе один и тот же эмоут раздувался бы на каждом бите
+let editEmoteSeq = 0;
+function sendEditEmotes({ emotes, period }) {
+  const n = 1 + Math.floor(Math.random() * Math.min(3, emotes.length));
+  const displayDurationMs = Math.round(Math.max(500, Math.min(1500, (period || 500) * 2)));
+  for (let i = 0; i < n; i++) {
+    const url = emotes[i % emotes.length];
+    broadcastEmotes({
+      type: "emote",
+      code: `edit:${++editEmoteSeq}`,
+      url,
+      user: "edit",
+      boostOnSameFromDifferentUser: false,
+      boostScaleStep: 0,
+      displayDurationMs,
+      size: EMOTE_SIZE,
+    });
+  }
+}
 
 // Кто может запускать эдит командой: editWho = ["broadcaster", "moderator", "vip", "subscriber", "everyone"]
 function canTriggerEdit(tags) {
