@@ -207,7 +207,7 @@ const app = express();
 app.use(express.json());
 
 app.use((req, res, next) => {
-  if (req.url !== "/api/game/state" && req.url !== "/api/edit/state") console.log(`[HTTP] ${req.method} ${req.url}`); // панель опрашивает их постоянно
+  if (!["/api/game/state", "/api/edit/state", "/api/reward/state"].includes(req.url)) console.log(`[HTTP] ${req.method} ${req.url}`); // панель опрашивает их постоянно
   next();
 });
 

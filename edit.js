@@ -28,137 +28,203 @@ function removeFile(file) {
 
 // ---------------------------------------------------------------- биты
 
-// Уровни громкости приходят из OBS ~20 раз в секунду. Ищем удары (резкий рост уровня), по ним — темп и фазу
-// сетки битов, и дальше предсказываем удары по сетке (как beat_grid в офлайн-рендере), а не ждём каждый —
-// так эффект попадает в бит несмотря на редкие данные и задержку.
-// Сетке не верим вслепую: в тишине (конец трека, пауза) биты прекращаются и сетка сбрасывается, а если удары
-// перестали в неё попадать (сменился темп, трек без паузы) — она снимается. Пока сетки нет, биты идут прямо
-// по скачкам громкости.
-const SILENCE_ABS = 0.02;      // почти ноль — тишина в любом случае
-const SILENCE_REL = 0.12;      // или тише 12% от обычной громкости этой музыки (затухание в конце трека)
-const SILENCE_STOP_MS = 350;   // через столько тишины биты прекращаются
-const SILENCE_RESET_MS = 1200; // ...а через столько сетка забывается — новый трек считается с нуля
-const ONSET_WINDOW_MS = 8000;  // по скольким последним ударам считаем темп
+// Уровни громкости приходят из OBS (~20 замеров в секунду, только пик — спектра нет).
+// Всё считаем в децибелах, поэтому тихо или громко играет музыка — неважно.
+// Темп — по автокорреляции огибающей «скачков громкости» за последние WINDOW_MS (а не по отдельным ударам,
+// выбранным по порогам: у плотно сведённой музыки пик почти не меняется и удары тонут), затем точный период
+// и фаза — гребёнкой по самим замерам; сетка предсказывает бит заранее (с учётом задержки). Темп меняется только
+// если другой заметно сильнее и держится, а сетке верим, только пока удары на неё ложатся. Пока темп не найден
+// уверенно (размытый ритм, начало трека) — бит прямо по скачкам громкости.
+const SILENCE_DB = -60;        // тише — тишина в любом случае
+const SILENCE_REL_DB = -18;    // на столько тише обычной громкости трека — пауза (затухание тоже считается)
+const SILENCE_STOP_MS = 350;   // столько тишины — эффекты на бит прекращаются
+const SILENCE_RESET_MS = 1200; // столько тишины — темп забываем (дальше, скорее всего, другой трек)
+const ACF_RES_MS = 10;         // шаг огибающей для автокорреляции
+const WINDOW_MS = 6000;        // по скольким секундам считаем темп
+const MIN_PERIOD = 333;        // 180 BPM
+const MAX_PERIOD = 750;        // 80 BPM
+const LOCK_R = 0.2;            // нормированная автокорреляция, при которой темп считаем найденным
+const ONSET_FIT = 0.5;         // и какая доля свежих ударов должна при этом попадать в сетку
+const ESTIMATE_MS = 250;       // как часто пересчитывать темп
+
+const toDb = (level) => 20 * Math.log10(Math.max(level, 1e-5));
 
 class BeatTracker {
   constructor() { this.reset(); }
 
   reset() {
-    this.samples = [];
-    this.onsets = [];
+    this.env = [];          // { t, flux } — рост громкости в дБ между соседними замерами
+    this.prevDb = null;
+    this.onsets = [];       // отдельные скачки громкости — запасной бит, пока темп не найден
     this.onsetCount = 0;
-    this.prev = 0;
     this.lastOnset = -1e9;
-    this.quietSince = 0; // с какого момента тихо (null — звучит)
-    this.loudRef = 0;    // обычная громкость музыки, медленное среднее за ~10 с
+    this.quietSince = 0;    // с какого момента тихо (null — звучит)
+    this.loudDb = null;     // обычная громкость трека, медленное среднее за ~10 с
+    this.musicSince = null;
     this.period = 0;
     this.phase = 0;
     this.locked = false;
+    this.strength = 0;
+    this.challenger = null; // другой темп, который сильнее прежнего: { P, n } — сколько пересчётов подряд
+    this.weakSince = null;
+    this.lastEstimate = 0;
+    this.lastBeat = null;   // { start, index } — последний отданный бит сетки (чтобы сдвиг фазы не дал двойной бит)
+    this.beatCount = 0;
     this.level = 0;
   }
 
   dropGrid() {
+    this.env = [];
     this.onsets = [];
     this.period = 0;
     this.locked = false;
-  }
-
-  isQuiet(level) {
-    return level < SILENCE_ABS || (this.loudRef > 0 && level < this.loudRef * SILENCE_REL);
+    this.musicSince = null;
+    this.challenger = null;
+    this.weakSince = null;
   }
 
   push(level, t) {
     this.level = level;
-    if (level >= SILENCE_ABS) this.loudRef = this.loudRef ? this.loudRef * 0.995 + level * 0.005 : level;
-
-    const quiet = this.isQuiet(level);
+    const db = toDb(level);
+    if (db > SILENCE_DB) this.loudDb = this.loudDb === null ? db : this.loudDb * 0.995 + db * 0.005;
+    const quiet = db < SILENCE_DB || (this.loudDb !== null && db < this.loudDb + SILENCE_REL_DB);
     if (quiet) {
       if (this.quietSince === null) this.quietSince = t;
-      if (t - this.quietSince > SILENCE_RESET_MS && (this.onsets.length || this.locked)) this.dropGrid();
+      if (t - this.quietSince > SILENCE_RESET_MS && (this.env.length || this.locked)) this.dropGrid();
     } else {
       this.quietSince = null;
+      if (this.musicSince === null) this.musicSince = t;
     }
 
-    const flux = Math.max(0, level - this.prev);
-    this.prev = level;
-    this.samples.push({ t, level, flux });
-    while (this.samples.length && t - this.samples[0].t > 3000) this.samples.shift();
+    const flux = quiet || this.prevDb === null ? 0 : Math.max(0, db - this.prevDb);
+    this.prevDb = db;
+    this.env.push({ t, flux });
+    while (this.env.length && t - this.env[0].t > WINDOW_MS) this.env.shift();
 
-    // удары перестали приходить (тихая часть, пропала бочка) — сетку снимаем, а не стучим по памяти
-    if (this.locked && t - this.lastOnset > Math.max(this.period * 4, 1600)) this.locked = false;
-
-    if (quiet || this.samples.length < 10) return;
-    const n = this.samples.length;
-    const meanFlux = this.samples.reduce((s, x) => s + x.flux, 0) / n;
-    const sdFlux = Math.sqrt(this.samples.reduce((s, x) => s + (x.flux - meanFlux) ** 2, 0) / n);
-    const meanLevel = this.samples.reduce((s, x) => s + x.level, 0) / n;
-    if (flux > meanFlux + 1.4 * sdFlux && flux > 0.015 && level > meanLevel * 1.05 && t - this.lastOnset > 240) {
-      this.lastOnset = t;
-      this.onsetCount++;
-      this.onsets.push(t);
-      while (this.onsets.length && t - this.onsets[0] > ONSET_WINDOW_MS) this.onsets.shift();
+    if (!quiet) this.detectOnset(flux, t);
+    if (t - this.lastEstimate >= ESTIMATE_MS) {
+      this.lastEstimate = t;
       this.estimate(t);
     }
   }
 
-  // доля ударов, попавших в сетку (не дальше tolerance мс от её бита)
-  onGridShare(times, period, phase, tolerance = 60) {
-    if (!times.length) return 0;
-    return times.filter(t => {
-      let d = (t - phase) % period;
-      if (d < 0) d += period;
-      return Math.min(d, period - d) < tolerance;
-    }).length / times.length;
+  // Запасной бит: заметный скачок громкости относительно последних 3 секунд
+  detectOnset(flux, t) {
+    const recent = this.env.filter(e => t - e.t <= 3000);
+    if (recent.length < 10) return;
+    const mean = recent.reduce((s, e) => s + e.flux, 0) / recent.length;
+    const sd = Math.sqrt(recent.reduce((s, e) => s + (e.flux - mean) ** 2, 0) / recent.length);
+    if (flux > mean + 1.4 * sd && flux > 1 && t - this.lastOnset > 240) {
+      this.lastOnset = t;
+      this.onsetCount++;
+      this.onsets.push(t);
+      while (this.onsets.length > 8) this.onsets.shift();
+    }
   }
 
-  // Темп: период (80–180 BPM), под который лучше всего ложатся интервалы между ударами; фаза — сдвиг сетки
   estimate(now) {
-    // свежие удары не ложатся в нынешнюю сетку — скорее всего, другой трек: старые удары забываем
-    if (this.locked) {
-      // строже, чем при поиске: у близких темпов (96 и 128) часть ударов совпадает случайно
-      const fresh = this.onsets.filter(t => now - t < 2500);
-      if (fresh.length >= 3 && this.onGridShare(fresh, this.period, this.phase, 40) < 0.6) {
-        this.onsets = fresh;
-        this.period = 0;
-        this.locked = false;
+    if (this.musicSince === null || now - this.musicSince < 4000 || this.env.length < 40) {
+      this.locked = false;
+      return;
+    }
+    // огибающая на равномерной сетке 10 мс: каждый скачок «размазан» на ±30 мс (замеры приходят раз в ~50 мс
+    // с джиттером), свежие секунды весят больше — после смены трека новый темп побеждает быстрее
+    const from = now - WINDOW_MS;
+    const n = Math.ceil(WINDOW_MS / ACF_RES_MS);
+    const x = new Float64Array(n);
+    for (const e of this.env) {
+      if (!e.flux) continue;
+      const c = Math.round((e.t - from) / ACF_RES_MS);
+      for (let k = -3; k <= 3; k++) if (c + k >= 0 && c + k < n) x[c + k] += e.flux * (1 - Math.abs(k) / 4);
+    }
+    const mean = x.reduce((s, v) => s + v, 0) / n;
+    let energy = 0;
+    for (let i = 0; i < n; i++) { x[i] = (x[i] - mean) * (0.35 + 0.65 * i / n); energy += x[i] * x[i]; }
+    if (energy <= 1e-9) { this.locked = false; return; }
+    const minLag = Math.floor(MIN_PERIOD / ACF_RES_MS);
+    const maxLag = Math.ceil(MAX_PERIOD / ACF_RES_MS);
+    const r = new Float64Array(2 * maxLag + 2);
+    for (let lag = minLag - 1; lag <= 2 * maxLag + 1; lag++) {
+      let s = 0;
+      for (let i = lag; i < n; i++) s += x[i] * x[i - lag];
+      r[lag] = s / energy;
+    }
+    const rAt = (P) => { const l = P / ACF_RES_MS, i = Math.floor(l), f = l - i; return r[i] * (1 - f) + r[i + 1] * f; };
+    // период: пик автокорреляции (+ половина её значения на двойном периоде — против ошибки «в два раза быстрее»),
+    // мягкое предпочтение темпа около 120 BPM и прежнего темпа
+    let best = 0, bestScore = -Infinity;
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      if (!(r[lag] >= r[lag - 1] && r[lag] >= r[lag + 1])) continue; // только пики
+      const P = lag * ACF_RES_MS;
+      let score = r[lag] + 0.5 * Math.max(0, r[2 * lag]);
+      score *= Math.exp(-0.5 * (Math.log2(P / 500) / 1.0) ** 2);
+      if (this.period && Math.abs(P - this.period) / this.period < 0.03) score *= 1.15;
+      if (score > bestScore) { bestScore = score; best = lag; }
+    }
+    if (!best) { this.locked = false; return; }
+    const b = r[best];
+    const coarse = best * ACF_RES_MS;
+
+    // инерция: прежний темп меняем, только если другой заметно сильнее и держится ~0.75 с
+    // Уточнять период можно только рядом с пиком автокорреляции — иначе он понемногу уползает от пересчёта
+    // к пересчёту. Прежний темп при слабом сопернике держим как есть, уточняя только фазу.
+    let target = coarse;
+    let spread = 0.05;
+    if (this.period) {
+      if (Math.abs(coarse - this.period) / this.period < 0.04) {
+        this.challenger = null;
+        spread = 0.03;
+      } else if (b >= LOCK_R && b > rAt(this.period) * 1.3 &&
+                 (this.challenger && Math.abs(this.challenger.P - coarse) / coarse < 0.04 ? ++this.challenger.n : (this.challenger = { P: coarse, n: 1 }).n) >= 3) {
+        this.challenger = null; // другой темп держится ~0.75 с — переходим
+      } else {
+        if (!(b >= LOCK_R && b > rAt(this.period) * 1.3)) this.challenger = null;
+        target = this.period;
+        spread = 0;
       }
     }
+    this.strength = rAt(target);
 
-    const o = this.onsets;
-    if (o.length < 5) { this.locked = false; return; }
-    let bestP = 0;
-    let bestScore = -1;
-    for (let P = 333; P <= 750; P += 4) {
-      let score = 0;
-      for (let i = 0; i < o.length; i++) {
-        for (let j = i + 1; j < o.length && o[j] - o[i] < 4000; j++) {
-          const gap = o[j] - o[i];
-          const k = Math.round(gap / P);
-          if (k < 1) continue;
-          const err = gap - k * P;
-          score += Math.exp(-(err * err) / (2 * 35 * 35)) / Math.sqrt(k);
+    // точный период и фаза — гребёнкой по самим замерам, свежие весят больше
+    let bestP = target, bestPhase = 0, bestFit = -1;
+    const lo = Math.max(MIN_PERIOD, target * (1 - spread));
+    const hi = Math.min(MAX_PERIOD, target * (1 + spread));
+    for (let P = lo; P <= hi; P += 2) {
+      for (let phi = 0; phi < P; phi += 8) {
+        let fit = 0;
+        for (const e of this.env) {
+          if (!e.flux) continue;
+          let d = (e.t - phi) % P;
+          if (d < 0) d += P;
+          d = Math.min(d, P - d);
+          fit += e.flux * Math.exp(-(d * d) / (2 * 35 * 35)) * (0.5 + (e.t - from) / WINDOW_MS);
         }
+        if (this.period && Math.abs(P - this.period) < 6) fit *= 1.05; // не дёргать темп по мелочи
+        if (fit > bestFit) { bestFit = fit; bestP = P; bestPhase = phi; }
       }
-      if (this.period && Math.abs(P - this.period) < 12) score *= 1.15; // держимся прежнего темпа
-      if (score > bestScore) { bestScore = score; bestP = P; }
     }
-
-    let bestPhase = 0;
-    let bestFit = -1;
-    for (let phi = 0; phi < bestP; phi += 4) {
-      let fit = 0;
-      for (const t of o) {
-        let d = (t - phi) % bestP;
-        if (d < 0) d += bestP;
-        d = Math.min(d, bestP - d);
-        fit += Math.exp(-(d * d) / (2 * 30 * 30)) * (1 + (t - o[0]) / 6000); // свежие удары важнее
-      }
-      if (fit > bestFit) { bestFit = fit; bestPhase = phi; }
-    }
-
     this.period = bestP;
     this.phase = bestPhase;
-    this.locked = o.length >= 5 && this.onGridShare(o, bestP, bestPhase) >= 0.55;
+    // сетке верим, только если и настоящие удары последних секунд на неё ложатся
+    const recent = this.onsets.filter(t => now - t < 4000);
+    const fits = recent.length < 4 || this.onGridShare(recent) >= ONSET_FIT;
+    // захват: сразу при уверенном темпе, снимаем — только после 2 с слабого сигнала
+    if (this.strength >= LOCK_R && fits) {
+      this.locked = true;
+      this.weakSince = null;
+    } else if (this.strength < LOCK_R * 0.6 || !fits) {
+      if (this.weakSince === null) this.weakSince = now;
+      if (now - this.weakSince > 2000) this.locked = false;
+    }
+  }
+
+  // доля ударов, попавших в сетку (не дальше tolerance мс от её бита)
+  onGridShare(times, tolerance = 70) {
+    return times.filter(t => {
+      let d = (t - this.phase) % this.period;
+      if (d < 0) d += this.period;
+      return Math.min(d, this.period - d) < tolerance;
+    }).length / times.length;
   }
 
   // Где мы относительно битов в момент t: index — номер бита, u — доля пути до следующего (0..1)
@@ -166,12 +232,17 @@ class BeatTracker {
     if (this.quietSince !== null && t - this.quietSince > SILENCE_STOP_MS) return null; // тишина — эффектов нет
     if (this.locked && this.period) {
       const k = Math.floor((t - this.phase) / this.period);
-      return { index: `g${k}`, u: (t - this.phase - k * this.period) / this.period, period: this.period, bpm: 60000 / this.period, locked: true };
+      let start = this.phase + k * this.period;
+      // фаза чуть сдвинулась после пересчёта — это тот же бит, а не новый
+      if (this.lastBeat && start - this.lastBeat.start < this.period * 0.5) start = this.lastBeat.start;
+      else this.lastBeat = { start, index: `g${++this.beatCount}` };
+      const u = Math.max(0, (t - start) / this.period);
+      return { index: this.lastBeat.index, u, period: this.period, bpm: 60000 / this.period, locked: true };
     }
-    // сетки нет — бит прямо по скачкам громкости
+    // темп не найден — бит прямо по скачкам громкости
     if (!this.onsets.length) return null;
     const last = this.onsets[this.onsets.length - 1];
-    const gaps = this.onsets.slice(-8).map((x, i, a) => (i ? x - a[i - 1] : 0)).filter(g => g > 0).sort((a, b) => a - b);
+    const gaps = this.onsets.map((x, i, a) => (i ? x - a[i - 1] : 0)).filter(g => g > 0).sort((a, b) => a - b);
     const period = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 500;
     return { index: `o${this.onsetCount}`, u: (t - last) / period, period, bpm: 60000 / period, locked: false };
   }
