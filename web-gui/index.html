@@ -372,6 +372,10 @@
     .edit-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, .04); }
     .edit-row > span:first-child { color: var(--muted); width: 64px; flex: none; }
     .edit-row b { font-weight: 600; }
+    .reward-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 12px; }
+    .reward-code { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: rgba(145, 71, 255, .12); }
+    .reward-code[hidden] { display: none; }
+    .reward-code b { font: 700 20px/1 ui-monospace, Consolas, monospace; letter-spacing: .12em; }
     .meter { flex: 1; height: 8px; background: var(--field); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
     .meter-bar { display: block; height: 100%; width: 0; background: var(--ok); transition: width .1s linear; }
     .beat-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--accent-2); opacity: 0; flex: none; }
@@ -895,6 +899,35 @@
               <label class="check"><input type="checkbox" data-list="editWho" value="everyone"> все</label>
             </div>
             <p class="desc" style="margin:8px 0 0">Повтор команды во время эдита продлевает его. <code>!edit stop</code> — остановить.</p>
+          </div>
+
+          <div class="card">
+            <h2>Награда за баллы канала</h2>
+            <p class="desc">Бот сам создаёт награду на канале и запускает эдит, когда её покупают; покупка во время эдита продлевает его и усиливает эффекты. Если эдит не может запуститься (OBS не подключён), баллы возвращаются, пока бот выключен — награда скрыта. Баллы канала есть только у компаньонов и партнёров.</p>
+            <div class="reward-login">
+              <span>Twitch: <b id="rewardAccount">—</b></span>
+              <button class="btn btn-sm" id="btnRewardLogin" type="button">Войти через Twitch</button>
+              <button class="btn btn-sm" id="btnRewardLogout" type="button" hidden>Выйти</button>
+            </div>
+            <div class="reward-code" id="rewardCode" hidden>
+              Откройте <a id="rewardUri" href="https://www.twitch.tv/activate" target="_blank" rel="noopener">twitch.tv/activate</a>
+              под аккаунтом канала и введите код <b id="rewardCodeText"></b>
+              <button class="btn btn-sm btn-ghost" id="btnRewardCancel" type="button">Отмена</button>
+            </div>
+            <label class="check">
+              <input type="checkbox" id="editRewardEnabled" data-key="editRewardEnabled">
+              <span>Включить награду</span>
+            </label>
+            <div class="sentence" style="margin:10px 0 8px; gap:8px 14px">
+              Название <input class="input" id="editRewardTitle" data-key="editRewardTitle" maxlength="45" style="width:220px" spellcheck="false">
+              цена <input class="num" id="editRewardCost" data-key="editRewardCost" type="number" min="1" max="10000000" style="width:100px"> баллов
+            </div>
+            <div class="sentence" style="gap:8px 14px">
+              Эдит на <input class="num" id="editRewardDuration" data-key="editRewardDuration" type="number" min="5" max="600"> сек.,
+              каждая покупка во время эдита — ещё столько же и сила +<input class="num" id="editRewardBoost" data-key="editRewardBoost" type="number" min="0" max="100"> %
+              <span style="color:var(--dim)">(до ×2.5)</span>
+            </div>
+            <div class="edit-row" style="margin-top:8px"><span>Награда</span><b id="rewardStatus">—</b></div>
           </div>
 
           <div class="card">

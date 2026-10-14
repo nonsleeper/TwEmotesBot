@@ -16,6 +16,8 @@ const FILTERS = {
   sharp: { name: "TwEmotesBot: резкость", kind: "sharpness_filter_v2", neutral: { sharpness: 0 } },
 };
 const FRAME_MS = 33; // ~30 кадров в секунду в OBS
+const MAX_POWER = 2.5; // во сколько раз максимум можно «разогнать» эдит повторными наградами
+const MAX_LOOK = 3; // предел силы эффектов вместе с editIntensity — дальше картинка уже не читается
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 // fs.rmSync в Node 24 на Windows молча ничего не делает, если в пути есть кириллица (папка «Новая папка» и т.п.),
@@ -482,6 +484,7 @@ class EditController {
       enabled: Boolean(this.cfg && this.cfg.enabled),
       obs: this.obs.status(),
       running: Boolean(this.session),
+      power: this.session ? Math.round(this.session.power * 100) / 100 : 1,
       remaining: this.session ? Math.max(0, Math.ceil((this.session.endsAt - now) / 1000)) : 0,
       cooldown: Math.max(0, Math.ceil((this.cooldownUntil - now) / 1000)),
       level: this.lastLevelAt && now - this.lastLevelAt < 1000 ? Math.round(this.tracker.level * 1000) / 1000 : null,
@@ -569,14 +572,23 @@ class EditController {
     ]);
   }
 
-  // Старт по команде (проверяет паузу) или из панели (force — без паузы)
-  async start({ by = "", duration, force = false } = {}) {
+  // Старт по команде (проверяет паузу), из панели или за баллы (force — без паузы).
+  // stack — повтор во время эдита прибавляет время и усиливает эффекты на boost (0.25 = +25%)
+  async start({ by = "", duration, force = false, stack = false, boost = 0 } = {}) {
     if (!this.cfg || !this.cfg.enabled) throw new Error("Эдит выключен в настройках");
     if (!this.cfg.camera) throw new Error("Не выбран источник камеры");
     if (!this.obs.status().connected) throw new Error(this.obs.status().error || "Нет связи с OBS");
     if (this.session) {
-      this.session.endsAt = Date.now() + (duration || this.cfg.duration) * 1000; // повторная команда продлевает
-      return { extended: true };
+      const s = this.session;
+      const add = (duration || this.cfg.duration) * 1000;
+      if (stack) {
+        s.endsAt = Math.max(s.endsAt, Date.now()) + add;
+        s.power = Math.min(MAX_POWER, s.power + boost);
+        this.log(`[EDIT] Extended${by ? ` by ${by}` : ""}: +${add / 1000}s, ${Math.ceil((s.endsAt - Date.now()) / 1000)}s left, power ×${s.power.toFixed(2)}`);
+      } else {
+        s.endsAt = Math.max(s.endsAt, Date.now() + add); // повторная команда продлевает
+      }
+      return { extended: true, power: s.power };
     }
     if (!force && Date.now() < this.cooldownUntil) {
       throw new Error(`Эдит отдыхает ещё ${Math.ceil((this.cooldownUntil - Date.now()) / 1000)} с`);
@@ -609,7 +621,7 @@ class EditController {
       item, T, original, by,
       startedAt: Date.now(),
       endsAt: Date.now() + (duration || this.cfg.duration) * 1000,
-      beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force,
+      beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force, power: 1,
       filters, lastLutKey: null, lastSharp: null,
     };
     this.overlay({ type: "edit-start", canvas, rect: { cx: geo.cx, cy: geo.cy, w: geo.w, h: geo.h, rotation: T.rotation } });
@@ -673,7 +685,7 @@ class EditController {
       s.seed = Math.random();
       if (this.cfg.emotes) {
         const emotes = this.emotePool();
-        if (emotes.length) this.overlay({ type: "edit-beat", period: pos.period, emotes: emotes.slice(0, 3), effect: s.effect });
+        if (emotes.length) this.overlay({ type: "edit-beat", period: pos.period, emotes: emotes.slice(0, Math.round(3 * s.power)), effect: s.effect, power: s.power });
       }
     }
 
@@ -691,7 +703,7 @@ class EditController {
     }
     base.ox = (base.ox || 0) + Math.sin(t * 2.4) * 0.004;
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
-    const look = scaleLook(base, this.cfg.intensity);
+    const look = scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * s.power));
 
     const transform = buildTransform(s.T, look);
     const requests = [];

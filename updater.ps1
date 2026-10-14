@@ -25,7 +25,7 @@ function Log($msg) { Add-Content -Path $log -Value ("[{0}] {1}" -f (Get-Date -Fo
 # Данные пользователя в app\ — их обновление никогда не перезаписывает.
 # Пак спецзвуков (special-sounds-packed.json) сюда не входит: он приходит с релизом и обновляется вместе
 # с программой (прежний остаётся в .update-backup).
-$userData = @("bot-config.json", "bot-config.json.bak", ".import-asked", ".update-result.json", "cache", "greetings",
+$userData = @("bot-config.json", "bot-config.json.bak", ".import-asked", ".update-result.json", "twitch-auth.json", "cache", "greetings",
               "games", "sounds", "tray.log")
 
 $app = Join-Path $InstallDir "app"

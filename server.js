@@ -73,7 +73,12 @@ let config = {
   editShowBeat: false,
   editAlwaysPunch: true,
   editBoxPulse: true,
-  editBoxPulseAmount: 12
+  editBoxPulseAmount: 12,
+  editRewardEnabled: false,
+  editRewardTitle: "Эдит на вебке",
+  editRewardCost: 5000,
+  editRewardDuration: 30,
+  editRewardBoost: 25
 };
 
 // Загрузка из bot-config.json если существует
@@ -328,13 +333,33 @@ app.post("/api/edit/config", (req, res) => {
     if (key.startsWith("edit") || key.startsWith("obs")) config[key] = value;
   }
   edit.applyConfig(config);
+  rewards.applyConfig(config);
   console.log("[EDIT] Settings updated");
   res.json({ success: true });
 });
 
+// Награда за баллы: вход в Twitch и состояние награды (twitch-rewards.js)
+app.get("/api/reward/state", (req, res) => {
+  res.json({ success: true, ...rewards.state() });
+});
+
+app.post("/api/reward/login", async (req, res) => {
+  try {
+    res.json({ success: true, ...(await rewards.startLogin()) });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/api/reward/logout", async (req, res) => {
+  rewards.cancelLogin();
+  await rewards.logout();
+  res.json({ success: true, ...rewards.state() });
+});
+
 app.post("/api/shutdown", async (req, res) => {
   console.log("[PROCESS] Shutdown requested via API");
-  await edit.shutdown(); // вернуть вебку на место, если эдит шёл
+  await Promise.all([edit.shutdown(), rewards.shutdown()]); // вернуть вебку на место, спрятать награду
   savePlaytime();
   if (saveGreetingsTimeout) {
     clearTimeout(saveGreetingsTimeout);
@@ -396,11 +421,36 @@ edit.overlay = (data) => {
   editOverlay(data);
 };
 
+// Награда за баллы канала: запускает эдит, повторная — продлевает и усиливает его.
+// Не получилось (OBS не подключён и т.п.) — баллы возвращаются
+const { RewardManager } = require("./twitch-rewards");
+const rewards = new RewardManager({
+  file: path.join(__dirname, "twitch-auth.json"),
+  log: (msg) => console.log(msg),
+  isAvailable: () => {
+    const s = edit.state();
+    return s.enabled && s.obs.connected && Boolean(config.editCameraSource);
+  },
+});
+rewards.applyConfig(config);
+rewards.on("redemption", async (r) => {
+  const duration = Math.min(600, Math.max(5, Number(config.editRewardDuration) || 30));
+  const boost = Math.min(100, Math.max(0, Number(config.editRewardBoost ?? 25))) / 100;
+  try {
+    const result = await edit.start({ by: `${r.user} (за баллы)`, duration, force: true, stack: true, boost });
+    if (result.started) console.log(`[REWARD] ${r.user} redeemed the edit`);
+    await rewards.resolve(r, true);
+  } catch (err) {
+    console.log(`[REWARD] ${r.user}: ${err.message} — points refunded`);
+    await rewards.resolve(r, false);
+  }
+});
+
 // На бит эдита — 1–3 эмоута из чата в оверлей эмоутов (emotes.html), коротко (~2 бита) и без «буста»:
 // иначе один и тот же эмоут раздувался бы на каждом бите
 let editEmoteSeq = 0;
-function sendEditEmotes({ emotes, period }) {
-  const n = 1 + Math.floor(Math.random() * Math.min(3, emotes.length));
+function sendEditEmotes({ emotes, period, power = 1 }) {
+  const n = 1 + Math.floor(Math.random() * Math.min(Math.round(3 * power), emotes.length)); // усиленный наградами эдит — больше эмоутов
   const displayDurationMs = Math.round(Math.max(500, Math.min(1500, (period || 500) * 2)));
   for (let i = 0; i < n; i++) {
     const url = emotes[i % emotes.length];
@@ -2098,7 +2148,7 @@ process.on("uncaughtException", (err) => {
 
 process.on("SIGINT", async () => {
   console.log("\n[PROCESS] Shutting down...");
-  await edit.shutdown();
+  await Promise.all([edit.shutdown(), rewards.shutdown()]);
   savePlaytime();
   if (currentStreamId) {
     saveGreetingsToFile(currentStreamId);
@@ -2109,7 +2159,7 @@ process.on("SIGINT", async () => {
 
 process.on("SIGTERM", async () => {
   console.log("\n[PROCESS] Shutting down...");
-  await edit.shutdown();
+  await Promise.all([edit.shutdown(), rewards.shutdown()]);
   savePlaytime();
   if (currentStreamId) {
     saveGreetingsToFile(currentStreamId);

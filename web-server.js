@@ -71,7 +71,12 @@ const DEFAULT_CONFIG = {
   editShowBeat: false,
   editAlwaysPunch: true,
   editBoxPulse: true,
-  editBoxPulseAmount: 12
+  editBoxPulseAmount: 12,
+  editRewardEnabled: false,
+  editRewardTitle: "Эдит на вебке",
+  editRewardCost: 5000,
+  editRewardDuration: 30,
+  editRewardBoost: 25
 };
 
 let serverProcess = null;
@@ -235,7 +240,13 @@ function sanitizeConfig(input) {
     editShowBeat: src.editShowBeat === true,
     editAlwaysPunch: src.editAlwaysPunch !== false,
     editBoxPulse: src.editBoxPulse !== false,
-    editBoxPulseAmount: clamp(num(src.editBoxPulseAmount, DEFAULT_CONFIG.editBoxPulseAmount, { int: true }), 0, 60)
+    editBoxPulseAmount: clamp(num(src.editBoxPulseAmount, DEFAULT_CONFIG.editBoxPulseAmount, { int: true }), 0, 60),
+    editRewardEnabled: src.editRewardEnabled === true,
+    editRewardTitle: typeof src.editRewardTitle === "string" && src.editRewardTitle.trim()
+      ? src.editRewardTitle.trim().slice(0, 45) : DEFAULT_CONFIG.editRewardTitle,
+    editRewardCost: clamp(num(src.editRewardCost, DEFAULT_CONFIG.editRewardCost, { min: 1, int: true }), 1, 10000000),
+    editRewardDuration: clamp(num(src.editRewardDuration, DEFAULT_CONFIG.editRewardDuration, { min: 5, int: true }), 5, 600),
+    editRewardBoost: clamp(num(src.editRewardBoost, DEFAULT_CONFIG.editRewardBoost, { int: true }), 0, 100)
   };
 }
 
@@ -610,6 +621,9 @@ app.get("/api/edit/state", (req, res) => proxyEdit(req, res, "/api/edit/state"))
 app.get("/api/edit/sources", (req, res) => proxyEdit(req, res, "/api/edit/sources"));
 app.post("/api/edit/start", (req, res) => proxyEdit(req, res, "/api/edit/start", "POST"));
 app.post("/api/edit/stop", (req, res) => proxyEdit(req, res, "/api/edit/stop", "POST"));
+app.get("/api/reward/state", (req, res) => proxyEdit(req, res, "/api/reward/state"));
+app.post("/api/reward/login", (req, res) => proxyEdit(req, res, "/api/reward/login", "POST"));
+app.post("/api/reward/logout", (req, res) => proxyEdit(req, res, "/api/reward/logout", "POST"));
 
 app.get("/api/status", (req, res) => {
   res.json({ 

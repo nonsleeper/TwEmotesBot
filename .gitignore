@@ -9,6 +9,7 @@ dist/
 bot-config.json
 bot-config.json.bak
 .import-asked
+twitch-auth.json
 .update-result.json
 .env
 cache/

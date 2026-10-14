@@ -41,6 +41,7 @@ const KEY_TAB = {
   editEnabled: 'edit', obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
   editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
   editIntensity: 'edit', editEffects: 'edit', editEmotes: 'edit', editLatencyMs: 'edit', editShowBeat: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
+  editRewardEnabled: 'edit', editRewardTitle: 'edit', editRewardCost: 'edit', editRewardDuration: 'edit', editRewardBoost: 'edit',
 };
 
 const state = {
@@ -1342,12 +1343,67 @@ async function pollEditState() {
       $('editBpm').textContent = s.bpm ? `${s.bpm} BPM${s.locked ? '' : ' ?'}` : (s.level == null ? 'нет звука' : 'ищу бит…');
       $('editBpm').title = s.locked ? 'темп найден, эффекты идут по сетке битов' : 'темп ещё не найден — эффекты идут по отдельным ударам';
       $('editBeat').style.opacity = s.beatPhase == null ? 0 : Math.max(0, 1 - s.beatPhase * 2.5);
-      $('editRun').textContent = s.running ? `идёт, осталось ${s.remaining} с` : s.cooldown ? `отдыхает ${s.cooldown} с` : 'готов';
+      $('editRun').textContent = s.running ? `идёт, осталось ${s.remaining} с${s.power > 1 ? ` · сила ×${s.power.toFixed(2)}` : ''}` : s.cooldown ? `отдыхает ${s.cooldown} с` : 'готов';
       $('editRun').style.color = s.running ? 'var(--ok)' : '';
     }
   } catch {}
+  pollRewardState();
   editPollTimer = setTimeout(pollEditState, 250);
 }
+
+// ---- награда за баллы: вход в Twitch (код на twitch.tv/activate) и состояние награды
+let rewardPollAt = 0;
+function renderReward(r) {
+  const signedIn = Boolean(r && r.signedIn);
+  $('rewardAccount').textContent = !r ? 'бот не запущен' : signedIn ? r.login : r.pending ? 'ждём ввода кода…' : 'вход не выполнен';
+  $('rewardAccount').style.color = signedIn ? 'var(--ok)' : '';
+  $('btnRewardLogin').hidden = signedIn || Boolean(r && r.pending);
+  $('btnRewardLogout').hidden = !signedIn;
+  $('rewardCode').hidden = !(r && r.pending);
+  if (r && r.pending) {
+    $('rewardCodeText').textContent = r.pending.code;
+    $('rewardUri').href = r.pending.uri;
+  }
+  let status = '—', color = '';
+  if (r && r.error) { status = r.error; color = 'var(--err)'; }
+  else if (r && signedIn && !r.enabled) status = 'выключена (скрыта на канале)';
+  else if (r && signedIn && r.reward) {
+    status = `«${r.reward.title}», ${r.reward.cost} баллов — ${r.reward.paused ? 'на паузе: эдит сейчас не запустится' : r.listening ? 'активна' : 'подключаюсь…'}`;
+    color = r.reward.paused ? 'var(--warn)' : r.listening ? 'var(--ok)' : '';
+  } else if (r && signedIn) status = 'настраиваю…';
+  else if (r) status = 'войдите в Twitch, чтобы бот создал награду';
+  $('rewardStatus').textContent = status;
+  $('rewardStatus').style.color = color;
+}
+async function pollRewardState() {
+  if (Date.now() - rewardPollAt < 1000) return;
+  rewardPollAt = Date.now();
+  try {
+    const res = await fetch('/api/reward/state');
+    renderReward(res.status === 409 ? null : await res.json());
+  } catch {}
+}
+$('btnRewardLogin').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/reward/login', { method: 'POST' });
+    renderReward(r);
+    window.open(r.pending.uri, '_blank', 'noopener');
+  } catch (err) {
+    toast(`Вход не начался: ${err.message}`, 'err');
+  }
+});
+$('btnRewardCancel').addEventListener('click', async () => {
+  try { renderReward(await api('/api/reward/logout', { method: 'POST' })); } catch {}
+});
+$('btnRewardLogout').addEventListener('click', async () => {
+  if (!confirm('Выйти из Twitch? Награда на канале будет скрыта.')) return;
+  try {
+    renderReward(await api('/api/reward/logout', { method: 'POST' }));
+    toast('Вы вышли из Twitch, награда скрыта', 'ok');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
 
 $('btnEditSources').addEventListener('click', loadEditSources);
 $('btnEditTest').addEventListener('click', async () => {
