@@ -513,6 +513,7 @@ class EditController {
       this.log("[EDIT] Connected to OBS");
       this.restoreAfterCrash().catch(err => this.log(`[EDIT] Restore failed: ${err.message}`));
     });
+    this.obs.on("failed", (why) => this.log(`[EDIT] Can't connect to OBS: ${why}`));
     this.obs.on("disconnected", (why) => {
       this.log(`[EDIT] OBS disconnected: ${why}`);
       if (this.session) this.endSession("OBS отключился", { restore: false });

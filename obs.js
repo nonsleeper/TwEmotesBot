@@ -63,6 +63,8 @@ class ObsClient extends EventEmitter {
       else if (code === 4010) this.error = "OBS: неподдерживаемая версия протокола";
       else if (!this.error || wasReady) this.error = wasReady ? "OBS закрыл соединение" : this.error || "OBS недоступен";
       if (wasReady) this.emit("disconnected", this.error);
+      else if (this.error !== this.lastReported) this.emit("failed", this.error); // в лог — только когда причина сменилась
+      this.lastReported = this.error;
       if (!this.closedByUs) {
         // неверный пароль сам не исправится — пробуем реже
         this.retryTimer = setTimeout(() => this.connect(), code === 4009 ? 30000 : 5000);
@@ -71,9 +73,13 @@ class ObsClient extends EventEmitter {
 
     ws.on("error", (err) => {
       if (this.ws !== ws) return;
+      const http = /Unexpected server response: (\d+)/.exec(err.message);
       this.error = err.code === "ECONNREFUSED"
         ? "OBS не отвечает: он не запущен или сервер WebSocket выключен (Сервис → Настройки сервера WebSocket)"
-        : `OBS: ${err.message}`;
+        : http
+          // ответил кто-то, но не сервер WebSocket OBS: чужая программа на этом порту, VPN/прокси на пути к адресу
+          ? `По адресу ${this.options.host}:${this.options.port} ответил не OBS (HTTP ${http[1]}). Проверьте адрес и порт; если OBS на этом же компьютере — укажите 127.0.0.1`
+          : `OBS: ${err.message}`;
     });
   }
 
@@ -97,6 +103,7 @@ class ObsClient extends EventEmitter {
     } else if (op === OP.Identified) {
       this.identified = true;
       this.error = null;
+      this.lastReported = null;
       this.emit("ready");
     } else if (op === OP.Event) {
       if (d.eventType === "InputVolumeMeters") this.emit("meters", d.eventData.inputs || []);
