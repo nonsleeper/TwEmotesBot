@@ -1,7 +1,7 @@
 // «Эдит» на вебке: под бит музыки бот дёргает источник камеры в OBS (зум, тряска, наклон, вращение, отражение —
 // через обрезку, масштаб и поворот элемента сцены; цвет, вспышки, подкраска, мерцание — фильтром «Коррекция цвета»;
-// инверт, постер, тепловизор и другие — фильтром «Применить LUT» со сгенерированными таблицами; резкость — «Резкость»)
-// и бросает эмоуты из чата в оверлей эмоутов. Биты — по уровню громкости выбранного аудиоисточника OBS.
+// инверт, постер, тепловизор и другие — фильтром «Применить LUT» со сгенерированными таблицами; резкость — «Резкость»).
+// Биты — по уровню громкости выбранного аудиоисточника OBS.
 // Всё через встроенный в OBS сервер WebSocket (obs.js), плагины не нужны.
 const fs = require("fs");
 const path = require("path");
@@ -488,10 +488,8 @@ function writeLuts(dir) {
 // ---------------------------------------------------------------- сеанс эдита
 
 class EditController {
-  constructor({ dataDir, log = console.log, overlay = () => {}, emotePool = () => [] }) {
+  constructor({ dataDir, log = console.log }) {
     this.log = log;
-    this.overlay = overlay;
-    this.emotePool = emotePool;
     this.restoreFile = path.join(dataDir, "edit-restore.json");
     this.obs = new ObsClient();
     this.tracker = new BeatTracker();
@@ -527,44 +525,13 @@ class EditController {
       cooldown: clamp(Number(cfg.editCooldown) || 0, 0, 3600),
       intensity: clamp((Number(cfg.editIntensity) || 100) / 100, 0.1, 2.5),
       effects: (Array.isArray(cfg.editEffects) ? cfg.editEffects : EFFECT_KEYS).filter(k => EFFECTS[k]),
-      emotes: cfg.editEmotes !== false,
       latency: clamp(Number(cfg.editLatencyMs) || 0, 0, 500),
-      showBeat: cfg.editShowBeat === true,
       alwaysPunch: cfg.editAlwaysPunch !== false,
       boxPulse: cfg.editBoxPulse !== false ? clamp(Number(cfg.editBoxPulseAmount ?? 12), 0, 60) / 100 : 0,
     };
     if (!this.cfg.effects.length) this.cfg.effects = ["punch"];
     if (this.cfg.enabled) this.obs.configure({ host: cfg.obsHost, port: cfg.obsPort, password: cfg.obsPassword });
     else this.obs.disconnect();
-    this.updateBeatIndicator();
-  }
-
-  // ---- индикатор бита в оверлее (для проверки, как бот слышит музыку): «beat-tick» на каждый бит,
-  // который использует эдит, и «beat-status» дважды в секунду (есть ли звук, темп, найдена ли сетка)
-  beatStatus() {
-    const show = Boolean(this.cfg && this.cfg.enabled && this.cfg.showBeat);
-    if (!show) return { type: "beat-status", show: false };
-    const pos = this.tracker.position(Date.now() + this.cfg.latency);
-    return { type: "beat-status", show: true, active: Boolean(pos), bpm: pos ? Math.round(pos.bpm) : null, locked: pos ? pos.locked : false };
-  }
-
-  updateBeatIndicator() {
-    clearInterval(this.beatTimer);
-    this.overlay(this.beatStatus());
-    if (!this.beatStatus().show) return;
-    let lastStatusAt = 0;
-    this.beatTimer = setInterval(() => {
-      const now = Date.now();
-      const pos = this.tracker.position(now + this.cfg.latency);
-      if (pos && pos.index !== this.tickBeat) {
-        this.tickBeat = pos.index;
-        this.overlay({ type: "beat-tick", locked: pos.locked, bpm: Math.round(pos.bpm), period: pos.period });
-      }
-      if (now - lastStatusAt > 500) {
-        lastStatusAt = now;
-        this.overlay(this.beatStatus());
-      }
-    }, 15);
   }
 
   state() {
@@ -698,15 +665,6 @@ class EditController {
     await this.ensureFilters(filters);
     await this.obs.batch(this.filterRequests(filters, true));
 
-    let canvas = { w: 1920, h: 1080 };
-    try {
-      const v = await this.obs.request("GetVideoSettings");
-      canvas = { w: v.baseWidth, h: v.baseHeight };
-    } catch {}
-    const bounded = T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE";
-    const geo = centerOf(T, bounded ? T.boundsWidth : (T.sourceWidth - T.cropLeft - T.cropRight) * T.scaleX,
-      bounded ? T.boundsHeight : (T.sourceHeight - T.cropTop - T.cropBottom) * T.scaleY);
-
     this.session = {
       item, T, original, by,
       startedAt: Date.now(),
@@ -714,7 +672,6 @@ class EditController {
       beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force, power: 1,
       filters, lastLutKey: null, lastSharp: null, beats: 0, frames: 0, skipped: 0,
     };
-    this.overlay({ type: "edit-start", canvas, rect: { cx: geo.cx, cy: geo.cy, w: geo.w, h: geo.h, rotation: T.rotation } });
     this.timer = setInterval(() => this.frame(), FRAME_MS);
     this.log(`[EDIT] Started${by ? ` by ${by}` : ""} for ${Math.round((this.session.endsAt - Date.now()) / 1000)}s on "${this.cfg.camera}"`);
     return { started: true };
@@ -731,7 +688,6 @@ class EditController {
     if (!s) return;
     this.session = null;
     clearInterval(this.timer);
-    this.overlay({ type: "edit-end" });
     if (s.chatTriggered) this.cooldownUntil = Date.now() + this.cfg.cooldown * 1000;
     if (restore) {
       try {
@@ -777,10 +733,6 @@ class EditController {
       s.effect = pool[Math.floor(Math.random() * pool.length)];
       s.dir = Math.random() < 0.5 ? -1 : 1;
       s.seed = Math.random();
-      if (this.cfg.emotes) {
-        const emotes = this.emotePool();
-        if (emotes.length) this.overlay({ type: "edit-beat", period: pos.period, emotes: emotes.slice(0, Math.round(3 * s.power)), effect: s.effect, power: s.power });
-      }
     }
 
     // между битами (и в тишине) эффект затухает; поверх — лёгкий «дрейф», как в рендере
@@ -832,7 +784,6 @@ class EditController {
 
   // При выключении бота: вернуть камеру и дождаться ответа OBS (не дольше timeoutMs)
   async shutdown(timeoutMs = 1500) {
-    clearInterval(this.beatTimer);
     if (this.session) {
       await Promise.race([this.endSession("бот выключается", { restore: true }), new Promise(r => setTimeout(r, timeoutMs))]);
     }

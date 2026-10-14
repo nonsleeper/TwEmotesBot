@@ -66,9 +66,7 @@ const DEFAULT_CONFIG = {
   editWho: ["broadcaster", "moderator", "vip"],
   editIntensity: 100,
   editEffects: ["punch", "smash", "shake", "tilt", "zoomspin", "spin", "flip", "glitch", "flash", "strobe", "flicker", "hue", "tint", "mono", "crunch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"],
-  editEmotes: true,
   editLatencyMs: 60,
-  editShowBeat: false,
   editAlwaysPunch: true,
   editBoxPulse: true,
   editBoxPulseAmount: 12,
@@ -235,9 +233,7 @@ function sanitizeConfig(input) {
     editEffects: Array.isArray(src.editEffects)
       ? [...new Set(src.editEffects.filter(e => EDIT_EFFECTS.includes(e)))]
       : DEFAULT_CONFIG.editEffects.slice(),
-    editEmotes: src.editEmotes !== false,
     editLatencyMs: clamp(num(src.editLatencyMs, DEFAULT_CONFIG.editLatencyMs, { int: true }), 0, 500),
-    editShowBeat: src.editShowBeat === true,
     editAlwaysPunch: src.editAlwaysPunch !== false,
     editBoxPulse: src.editBoxPulse !== false,
     editBoxPulseAmount: clamp(num(src.editBoxPulseAmount, DEFAULT_CONFIG.editBoxPulseAmount, { int: true }), 0, 60),

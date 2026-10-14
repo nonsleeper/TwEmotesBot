@@ -40,7 +40,7 @@ const KEY_TAB = {
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
   editEnabled: 'edit', obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
   editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
-  editIntensity: 'edit', editEffects: 'edit', editEmotes: 'edit', editLatencyMs: 'edit', editShowBeat: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
+  editIntensity: 'edit', editEffects: 'edit', editLatencyMs: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
   editRewardEnabled: 'edit', editRewardTitle: 'edit', editRewardCost: 'edit', editRewardDuration: 'edit', editRewardBoost: 'edit',
 };
 
@@ -548,7 +548,6 @@ function updateOverlayLinks() {
   $('openEmotes').href = emotes;
   $('openGreeting').href = greeting;
   $('openGame').href = game;
-  $('urlEdit').textContent = `http://127.0.0.1:${port}/edit.html`;
 }
 
 for (const input of simpleFields) {

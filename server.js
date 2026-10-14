@@ -68,9 +68,7 @@ let config = {
   editWho: ["broadcaster", "moderator", "vip"],
   editIntensity: 100,
   editEffects: ["punch", "smash", "shake", "tilt", "zoomspin", "spin", "flip", "glitch", "flash", "strobe", "flicker", "hue", "tint", "mono", "crunch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"],
-  editEmotes: true,
   editLatencyMs: 60,
-  editShowBeat: false,
   editAlwaysPunch: true,
   editBoxPulse: true,
   editBoxPulseAmount: 12,
@@ -382,44 +380,14 @@ const server = app.listen(PORT, "127.0.0.1", () => {
 const wssGreeting = new WebSocket.Server({ noServer: true });
 const wssEmotes = new WebSocket.Server({ noServer: true });
 const wssGame = new WebSocket.Server({ noServer: true });
-const wssEdit = new WebSocket.Server({ noServer: true });
 
-// ---- «Эдит» на вебке (edit.js): эффекты на источник камеры в OBS под бит + эмоуты на вебку (overlay/edit.html)
+// ---- «Эдит» на вебке (edit.js): эффекты на источник камеры в OBS под бит
 const { EditController } = require("./edit");
-const recentEmotes = []; // { url, at } — эмоуты из чата за последние минуты, ими эдит «стреляет» на бит
-function rememberEmote(url) {
-  if (!url) return;
-  recentEmotes.push({ url, at: Date.now() });
-  while (recentEmotes.length > 200 || (recentEmotes.length && Date.now() - recentEmotes[0].at > 3 * 60 * 1000)) recentEmotes.shift();
-}
-function editEmotePool() {
-  const urls = [...new Set(recentEmotes.slice().reverse().map(e => e.url))];
-  const pool = urls.length ? urls : GREETING_EMOTE_CODES.map(code => greetingEmoteUrl(code)).filter(Boolean);
-  return pool.sort(() => Math.random() - 0.5);
-}
-function broadcastEdit(data) {
-  const payload = JSON.stringify(data);
-  for (const c of wssEdit.clients) if (c.readyState === WebSocket.OPEN) c.send(payload);
-}
 const edit = new EditController({
   dataDir: path.join(__dirname, "cache"),
   log: (msg) => console.log(msg),
-  overlay: broadcastEdit,
-  emotePool: () => editEmotePool(),
 });
 edit.applyConfig(config);
-let lastEditStart = null; // для подключившегося посреди эдита оверлея
-wssEdit.on("connection", (ws) => {
-  console.log("[WS] Edit overlay connected");
-  if (edit.session && lastEditStart) ws.send(JSON.stringify(lastEditStart));
-  ws.send(JSON.stringify(edit.beatStatus()));
-});
-const editOverlay = broadcastEdit;
-edit.overlay = (data) => {
-  if (data.type === "edit-beat") { sendEditEmotes(data); return; } // эмоуты эдита — в обычный оверлей эмоутов
-  if (data.type === "edit-start") lastEditStart = data;
-  editOverlay(data);
-};
 
 // Награда за баллы канала: запускает эдит, повторная — продлевает и усиливает его.
 // Не получилось (OBS не подключён и т.п.) — баллы возвращаются
@@ -446,27 +414,6 @@ rewards.on("redemption", async (r) => {
   }
 });
 
-// На бит эдита — 1–3 эмоута из чата в оверлей эмоутов (emotes.html), коротко (~2 бита) и без «буста»:
-// иначе один и тот же эмоут раздувался бы на каждом бите
-let editEmoteSeq = 0;
-function sendEditEmotes({ emotes, period, power = 1 }) {
-  const n = 1 + Math.floor(Math.random() * Math.min(Math.round(3 * power), emotes.length)); // усиленный наградами эдит — больше эмоутов
-  const displayDurationMs = Math.round(Math.max(500, Math.min(1500, (period || 500) * 2)));
-  for (let i = 0; i < n; i++) {
-    const url = emotes[i % emotes.length];
-    broadcastEmotes({
-      type: "emote",
-      code: `edit:${++editEmoteSeq}`,
-      url,
-      user: "edit",
-      boostOnSameFromDifferentUser: false,
-      boostScaleStep: 0,
-      displayDurationMs,
-      size: EMOTE_SIZE,
-    });
-  }
-}
-
 // Кто может запускать эдит командой: editWho = ["broadcaster", "moderator", "vip", "subscriber", "everyone"]
 function canTriggerEdit(tags) {
   const who = new Set(Array.isArray(config.editWho) ? config.editWho : []);
@@ -492,10 +439,6 @@ server.on('upgrade', (request, socket, head) => {
   } else if (pathname === '/ws/game') {
     wssGame.handleUpgrade(request, socket, head, (ws) => {
       wssGame.emit('connection', ws, request);
-    });
-  } else if (pathname === '/ws/edit') {
-    wssEdit.handleUpgrade(request, socket, head, (ws) => {
-      wssEdit.emit('connection', ws, request);
     });
   } else {
     socket.destroy();
@@ -554,11 +497,6 @@ setInterval(() => {
     }
   }
 
-  for (const client of wssEdit.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
 }, 5000);
 
 // ---- «Текущая игра»: категория стрима + общее время в каждой игре (пауза, если нет ввода дольше GAME_IDLE_MS)
@@ -2124,7 +2062,6 @@ client.on("message", async (channel, tags, message, self) => {
           }
 
           addUserEmotes(username, totalEmotesInMessage);
-          for (const info of foundEmotes.values()) rememberEmote(info.url);
         } else {
           const currentCount = getUserEmoteCount(username);
           console.log(`[SPAM] ${username} blocked: ${currentCount}/${EMOTE_SPAM_LIMIT} emotes in last ${EMOTE_SPAM_WINDOW_MS / 1000}s`);

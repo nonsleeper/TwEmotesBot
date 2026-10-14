@@ -834,7 +834,7 @@
         <div class="split-main">
           <div class="card">
             <h2>Эдит на вебке</h2>
-            <p class="desc">По команде в чате вебка на время превращается в эдит: под бит музыки бот дёргает источник камеры в OBS — зум-удары, тряска, наклон, вспышки, цвет — и бросает на вебку эмоуты из чата. Работает через встроенный в OBS сервер WebSocket, плагины не нужны. После эдита вебка возвращается как была.</p>
+            <p class="desc">По команде в чате вебка на время превращается в эдит: под бит музыки бот дёргает источник камеры в OBS — зум-удары, тряска, наклон, вспышки, цвет. Работает через встроенный в OBS сервер WebSocket, плагины не нужны. После эдита вебка возвращается как была.</p>
             <label class="check">
               <input type="checkbox" id="editEnabled" data-key="editEnabled">
               <span>Включить эдит</span>
@@ -978,16 +978,6 @@
               <input type="range" id="editIntensity" data-key="editIntensity" min="10" max="250" step="5" style="width:200px; accent-color:var(--accent)">
               <b id="editIntensityValue"></b>
             </div>
-            <label class="check" style="margin-bottom:8px">
-              <input type="checkbox" id="editEmotes" data-key="editEmotes">
-              <span>Эмоуты из чата на бит
-                <small>Вылетают в обычном оверлее эмоутов (emotes.html) — отдельный источник не нужен.</small></span>
-            </label>
-            <label class="check" style="margin-bottom:8px">
-              <input type="checkbox" id="editShowBeat" data-key="editShowBeat">
-              <span>Индикатор бита поверх вебки (для проверки)
-                <small>Круг в правом верхнем углу оверлея: вспыхивает белым на каждый бит, который слышит бот, в тишине — чёрный. Обводка: зелёная — темп найден, жёлтая — ловит отдельные удары, серая — нет звука. Работает и без эдита.</small></span>
-            </label>
             <div class="sentence">
               Поправка задержки <input class="num" id="editLatency" data-key="editLatencyMs" type="number" min="0" max="500" step="10"> мс
               <span style="color:var(--dim)">— если эффекты запаздывают за битом, увеличьте</span>
@@ -1010,16 +1000,6 @@
               <button class="btn" id="btnEditStop" type="button">■ Стоп</button>
             </div>
             <p class="desc" style="margin:8px 0 0">Тест запускается сразу, без паузы и проверки прав. Сначала сохраните настройки.</p>
-          </div>
-
-          <div class="card">
-            <h2>Источник для OBS</h2>
-            <p class="desc">Только для индикатора бита: «Браузер» на весь экран, поверх вебки. Эмоуты эдита идут в обычный оверлей эмоутов.</p>
-            <div class="source">
-              <code id="urlEdit"></code>
-              <span class="size">1920 × 1080</span>
-              <button class="btn btn-sm" data-copy="urlEdit">Копировать</button>
-            </div>
           </div>
         </aside>
       </div>
