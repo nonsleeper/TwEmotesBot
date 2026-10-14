@@ -46,6 +46,8 @@ const MAX_PERIOD = 750;        // 80 BPM
 const LOCK_R = 0.2;            // нормированная автокорреляция, при которой темп считаем найденным
 const ONSET_FIT = 0.5;         // и какая доля свежих ударов должна при этом попадать в сетку
 const ESTIMATE_MS = 250;       // как часто пересчитывать темп
+const FLYWHEEL_BEATS = 4;      // без сетки: сколько битов подряд можно «досчитать» без удара
+const FLYWHEEL_GRACE_MS = 90;  // ...и сколько досчитанный бит ждёт настоящий удар
 
 const toDb = (level) => 20 * Math.log10(Math.max(level, 1e-5));
 
@@ -230,21 +232,38 @@ class BeatTracker {
   // Где мы относительно битов в момент t: index — номер бита, u — доля пути до следующего (0..1)
   position(t) {
     if (this.quietSince !== null && t - this.quietSince > SILENCE_STOP_MS) return null; // тишина — эффектов нет
-    if (this.locked && this.period) {
-      const k = Math.floor((t - this.phase) / this.period);
-      let start = this.phase + k * this.period;
-      // фаза чуть сдвинулась после пересчёта — это тот же бит, а не новый
-      if (this.lastBeat && start - this.lastBeat.start < this.period * 0.5) start = this.lastBeat.start;
-      else this.lastBeat = { start, index: `g${++this.beatCount}` };
-      const u = Math.max(0, (t - start) / this.period);
-      return { index: this.lastBeat.index, u, period: this.period, bpm: 60000 / this.period, locked: true };
+    const locked = Boolean(this.locked && this.period);
+    let start, period;
+    if (locked) {
+      period = this.period;
+      start = this.phase + Math.floor((t - this.phase) / period) * period;
+    } else {
+      // сетки нет — бит по скачкам громкости, а между ними «маховик»: не пришёл удар — бит всё равно идёт
+      // по примерному темпу (до FLYWHEEL_BEATS битов), чтобы эффект не пропадал на ударах потише.
+      // Досчитанный бит ждёт настоящий удар ещё FLYWHEEL_GRACE_MS: пришёл вовремя — бит ровно по нему
+      if (!this.onsets.length) return null;
+      const last = this.onsets[this.onsets.length - 1];
+      period = this.roughPeriod();
+      if (t - last > period * FLYWHEEL_BEATS) return null;
+      const grace = Math.min(FLYWHEEL_GRACE_MS, period * 0.2);
+      const k = Math.floor(Math.max(0, t - last - grace) / period);
+      start = k ? last + k * period + grace : last;
     }
-    // темп не найден — бит прямо по скачкам громкости
-    if (!this.onsets.length) return null;
-    const last = this.onsets[this.onsets.length - 1];
+    // начало сдвинулось меньше чем на полбита (пересчёт фазы, удар чуть позже предсказанного) — это тот же бит
+    if (this.lastBeat && start - this.lastBeat.start < period * 0.5) start = this.lastBeat.start;
+    else this.lastBeat = { start, index: `b${++this.beatCount}` };
+    return { index: this.lastBeat.index, u: Math.max(0, (t - start) / period), period, bpm: 60000 / period, locked };
+  }
+
+  // Темп без уверенной сетки: оценка автокорреляции, если ритм хоть немного читается, иначе — типичный
+  // промежуток между последними ударами (приведённый к 80–180 BPM)
+  roughPeriod() {
+    if (this.period && this.strength >= LOCK_R * 0.4) return this.period;
     const gaps = this.onsets.map((x, i, a) => (i ? x - a[i - 1] : 0)).filter(g => g > 0).sort((a, b) => a - b);
-    const period = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 500;
-    return { index: `o${this.onsetCount}`, u: (t - last) / period, period, bpm: 60000 / period, locked: false };
+    let p = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 500;
+    while (p > MAX_PERIOD) p /= 2;
+    while (p < MIN_PERIOD) p *= 2;
+    return p;
   }
 }
 
@@ -693,7 +712,7 @@ class EditController {
       startedAt: Date.now(),
       endsAt: Date.now() + (duration || this.cfg.duration) * 1000,
       beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force, power: 1,
-      filters, lastLutKey: null, lastSharp: null,
+      filters, lastLutKey: null, lastSharp: null, beats: 0, frames: 0, skipped: 0,
     };
     this.overlay({ type: "edit-start", canvas, rect: { cx: geo.cx, cy: geo.cy, w: geo.w, h: geo.h, rotation: T.rotation } });
     this.timer = setInterval(() => this.frame(), FRAME_MS);
@@ -725,7 +744,9 @@ class EditController {
         this.log(`[EDIT] Could not restore the camera now (${err.message}) — will retry on the next connection`);
       }
     }
-    this.log(`[EDIT] Ended: ${reason}`);
+    // OBS не успевал применять кадры — удары могли теряться, это видно по логу
+    const slow = s.frames ? Math.round(s.skipped / s.frames * 100) : 0;
+    this.log(`[EDIT] Ended: ${reason} (${s.beats} beats${slow >= 10 ? `, ${slow}% of frames skipped: OBS was too slow to apply them` : ""})`);
   }
 
   async restoreAfterCrash() {
@@ -745,11 +766,13 @@ class EditController {
     if (!s) return;
     const now = Date.now();
     if (now >= s.endsAt) { this.endSession("время вышло", { restore: true }); return; }
-    if (this.busy) return; // OBS ещё не ответил на прошлый кадр — пропускаем, чтобы не копить очередь
+    s.frames++;
+    if (this.busy) { s.skipped++; return; } // OBS ещё не ответил на прошлый кадр — пропускаем, чтобы не копить очередь
 
     const pos = this.tracker.position(now + this.cfg.latency);
     if (pos && pos.index !== s.beat) {
       s.beat = pos.index;
+      s.beats++;
       const pool = this.cfg.effects.length > 1 ? this.cfg.effects.filter(e => e !== s.effect) : this.cfg.effects;
       s.effect = pool[Math.floor(Math.random() * pool.length)];
       s.dir = Math.random() < 0.5 ? -1 : 1;
