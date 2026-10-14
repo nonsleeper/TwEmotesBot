@@ -27,6 +27,7 @@ const DEFAULT_CONFIG = {
   oldFilesExpireDays: 7,
   emoteDisplaySeconds: 6,
   emoteSize: 150,
+  emoteExcludeZones: [],
   greetingDisplaySeconds: 6,
   greetingVolume: 70,
   greetingFontFamily: "Arial",
@@ -147,6 +148,27 @@ function normalizeChannel(value) {
 }
 
 // Приведение конфигурации к ожидаемым типам (защита бота от некорректного ввода)
+// Зоны без эмоутов: прямоугольник, эллипс или многоугольник (нарисованный от руки) в координатах оверлея 900×600
+function sanitizeZones(list) {
+  if (!Array.isArray(list)) return [];
+  const int = (v, max) => Math.round(Math.min(max, Math.max(0, Number(v) || 0)));
+  const out = [];
+  for (const z of list.slice(0, 20)) {
+    if (!z || typeof z !== "object") continue;
+    if (z.type === "rect") {
+      const zone = { type: "rect", x: int(z.x, 900), y: int(z.y, 600), w: int(z.w, 900), h: int(z.h, 600) };
+      if (zone.w && zone.h) out.push(zone);
+    } else if (z.type === "ellipse") {
+      const zone = { type: "ellipse", cx: int(z.cx, 900), cy: int(z.cy, 600), rx: int(z.rx, 900), ry: int(z.ry, 600) };
+      if (zone.rx && zone.ry) out.push(zone);
+    } else if (z.type === "poly" && Array.isArray(z.points)) {
+      const points = z.points.slice(0, 300).filter(p => Array.isArray(p)).map(p => [int(p[0], 900), int(p[1], 600)]);
+      if (points.length >= 3) out.push({ type: "poly", points });
+    }
+  }
+  return out;
+}
+
 function sanitizeConfig(input) {
   const src = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const str = (v, d) => (typeof v === "string" ? v.trim() : d);
@@ -188,6 +210,7 @@ function sanitizeConfig(input) {
     oldFilesExpireDays: num(src.oldFilesExpireDays, DEFAULT_CONFIG.oldFilesExpireDays, { min: 0.01 }),
     emoteDisplaySeconds: clamp(num(src.emoteDisplaySeconds, DEFAULT_CONFIG.emoteDisplaySeconds, { min: 1 }), 1, 120),
     emoteSize: clamp(num(src.emoteSize, DEFAULT_CONFIG.emoteSize, { min: 24, int: true }), 24, 600),
+    emoteExcludeZones: sanitizeZones(src.emoteExcludeZones),
     greetingDisplaySeconds: clamp(num(src.greetingDisplaySeconds, DEFAULT_CONFIG.greetingDisplaySeconds, { min: 1 }), 1, 120),
     greetingVolume: clamp(num(src.greetingVolume, DEFAULT_CONFIG.greetingVolume, { int: true }), 0, 100),
     greetingFontFamily: fontName(src.greetingFontFamily),

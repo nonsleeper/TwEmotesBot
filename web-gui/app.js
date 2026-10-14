@@ -29,7 +29,7 @@ const KEY_TAB = {
   channel: 'connection', twitchClientId: 'connection', twitchClientSecret: 'connection', port: 'connection',
   greetingKeywords: 'greetings', greetingEmotes: 'greetings', greetingExpireDays: 'greetings', oldFilesExpireDays: 'greetings',
   emoteSpamLimit: 'emotes', emoteSpamWindow: 'emotes', emoteBoostOnSameFromDifferentUser: 'emotes',
-  emoteBoostScalePercent: 'emotes', emoteBlacklist: 'emotes', emoteDisplaySeconds: 'emotes', emoteSize: 'emotes',
+  emoteBoostScalePercent: 'emotes', emoteBlacklist: 'emotes', emoteExcludeZones: 'emotes', emoteDisplaySeconds: 'emotes', emoteSize: 'emotes',
   greetingDisplaySeconds: 'greetings', greetingVolume: 'greetings', greetingFontFamily: 'greetings',
   greetingFontSize: 'greetings', greetingBold: 'greetings', greetingTextColor: 'greetings',
   greetingOutlineColor: 'greetings', greetingOutlineWidth: 'greetings', greetingShadow: 'greetings',
@@ -440,6 +440,7 @@ function readForm() {
   out.greetingKeywords = keywords.get();
   out.greetingEmotes = greetingPicker.get();
   out.emoteBlacklist = blacklistPicker.get();
+  out.emoteExcludeZones = zoneEditor.get();
   out.greetingAnimations = animPicker.get();
   for (const key of listKeys()) out[key] = listValues(key);
   return out;
@@ -469,12 +470,15 @@ function writeForm(cfg) {
   keywords.set(cfg.greetingKeywords);
   greetingPicker.set(cfg.greetingEmotes);
   blacklistPicker.set(cfg.emoteBlacklist);
+  zoneEditor.set(cfg.emoteExcludeZones);
   animPicker.set(Array.isArray(cfg.greetingAnimations) ? cfg.greetingAnimations : [cfg.greetingAnimation || 'none']);
   animPicker.refreshDemos(); // в демо на плитках — эмоут приветствия из конфига
   updateBoostRow();
   updateVolumeLabel();
   updateEditIntensityLabel();
 }
+
+const listItemKey = (v) => (v && typeof v === 'object' ? JSON.stringify(v) : String(v));
 
 function changedKeys() {
   if (!state.saved) return [];
@@ -483,7 +487,7 @@ function changedKeys() {
   for (const [key, value] of Object.entries(form)) {
     const saved = state.saved[key];
     const same = Array.isArray(value)
-      ? sameList(value.map(String), (saved || []).map(String))
+      ? sameList(value.map(listItemKey), (saved || []).map(listItemKey))
       : typeof value === 'boolean'
         ? value === (saved !== false)
         : String(value ?? '') === String(saved ?? '');
@@ -673,6 +677,11 @@ function fitStage(stage) {
   frame.style.height = h + 'px';
   frame.style.transform = `scale(${scale})`;
   stage.style.height = Math.round(h * scale) + 'px';
+  const layer = stage.querySelector('.zone-layer');
+  if (layer) {
+    layer.style.width = w * scale + 'px';
+    layer.style.height = h * scale + 'px';
+  }
 }
 
 const stages = [$('greetStage'), $('emoteStage'), $('gameStage')];
@@ -758,6 +767,7 @@ function sendPreviewEmote(emote, user) {
     user: user || `viewer${++previewUser}`,
     displayDurationMs: (form.emoteDisplaySeconds || 6) * 1000,
     size: form.emoteSize || 150,
+    zones: form.emoteExcludeZones,
     boostOnSameFromDifferentUser: form.emoteBoostOnSameFromDifferentUser,
     boostScaleStep: Math.max(0, form.emoteBoostScalePercent ?? 20) / 100,
   });
@@ -787,6 +797,182 @@ $('btnPreviewBoost').addEventListener('click', () => withPool(pool => {
   [0, 700, 1400].forEach(delay => setTimeout(() => sendPreviewEmote(emote), delay));
 }));
 $('btnPreviewClear').addEventListener('click', () => postToFrame('emoteFrame', { type: 'clear' }));
+
+// ---- зоны без эмоутов: рисуются поверх предпросмотра в координатах оверлея (900×600), оверлей не ставит туда эмоуты
+const zoneEditor = (() => {
+  const W = 900, H = 600;
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const svg = $('zoneLayer');
+  let zones = [];
+  let selected = -1;
+  let tool = null;  // 'rect' | 'ellipse' | 'poly'
+  let draft = null; // { start, points, shape, el }
+
+  const clamp = (v, max) => Math.round(Math.min(max, Math.max(0, v)));
+
+  function toCanvas(e) {
+    const pt = svg.createSVGPoint();
+    pt.x = e.clientX;
+    pt.y = e.clientY;
+    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    return { x: clamp(p.x, W), y: clamp(p.y, H) };
+  }
+
+  function shapeEl(z) {
+    const attrs = z.type === 'rect' ? ['rect', { x: z.x, y: z.y, width: z.w, height: z.h }]
+      : z.type === 'ellipse' ? ['ellipse', { cx: z.cx, cy: z.cy, rx: z.rx, ry: z.ry }]
+      : ['polygon', { points: z.points.map(p => p.join(',')).join(' ') }];
+    const el = document.createElementNS(SVG_NS, attrs[0]);
+    for (const [k, v] of Object.entries(attrs[1])) el.setAttribute(k, v);
+    el.setAttribute('class', 'zone');
+    return el;
+  }
+
+  function render() {
+    svg.replaceChildren(...zones.map((z, i) => {
+      const el = shapeEl(z);
+      if (i === selected) el.classList.add('selected');
+      el.addEventListener('pointerdown', (e) => {
+        if (tool) return;
+        e.stopPropagation();
+        selected = selected === i ? -1 : i;
+        render();
+      });
+      return el;
+    }));
+    if (draft && draft.el) svg.append(draft.el);
+    $('btnZoneDelete').disabled = selected < 0;
+    $('btnZoneClear').disabled = !zones.length;
+  }
+
+  function changed() {
+    render();
+    updateDirty();
+  }
+
+  function setTool(next) {
+    tool = tool === next ? null : next;
+    draft = null;
+    svg.classList.toggle('drawing', Boolean(tool));
+    document.querySelectorAll('[data-zone-tool]').forEach(b => b.classList.toggle('active', b.dataset.zoneTool === tool));
+    render();
+  }
+
+  // рамка от точки a до b (с Shift — квадрат/круг) → прямоугольник или эллипс
+  function boxShape(a, b, square) {
+    let w = b.x - a.x, h = b.y - a.y;
+    if (square) {
+      const m = Math.max(Math.abs(w), Math.abs(h));
+      w = (w < 0 ? -1 : 1) * m;
+      h = (h < 0 ? -1 : 1) * m;
+    }
+    const x = Math.min(a.x, a.x + w), y = Math.min(a.y, a.y + h), bw = Math.abs(w), bh = Math.abs(h);
+    return tool === 'rect'
+      ? { type: 'rect', x: clamp(x, W), y: clamp(y, H), w: Math.round(bw), h: Math.round(bh) }
+      : { type: 'ellipse', cx: Math.round(x + bw / 2), cy: Math.round(y + bh / 2), rx: Math.round(bw / 2), ry: Math.round(bh / 2) };
+  }
+
+  function bigEnough(z) {
+    if (z.type === 'rect') return z.w >= 8 && z.h >= 8;
+    if (z.type === 'ellipse') return z.rx >= 4 && z.ry >= 4;
+    if (z.points.length < 3) return false;
+    const xs = z.points.map(p => p[0]), ys = z.points.map(p => p[1]);
+    return Math.max(...xs) - Math.min(...xs) >= 8 && Math.max(...ys) - Math.min(...ys) >= 8;
+  }
+
+  function distToSegment(p, a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const len2 = dx * dx + dy * dy;
+    const t = len2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2)) : 0;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  }
+
+  // Рамер — Дуглас — Пекер: из рисунка мышью убираем лишние точки
+  function simplify(points, eps) {
+    if (points.length < 3) return points;
+    const a = points[0], b = points[points.length - 1];
+    let index = -1, max = 0;
+    for (let i = 1; i < points.length - 1; i++) {
+      const d = distToSegment(points[i], a, b);
+      if (d > max) { max = d; index = i; }
+    }
+    if (max <= eps) return [a, b];
+    return [...simplify(points.slice(0, index + 1), eps).slice(0, -1), ...simplify(points.slice(index), eps)];
+  }
+
+  svg.addEventListener('pointerdown', (e) => {
+    if (!tool) return;
+    e.preventDefault();
+    try { svg.setPointerCapture(e.pointerId); } catch {} // рисование продолжится и за краем предпросмотра
+    const p = toCanvas(e);
+    draft = { start: p, points: [[p.x, p.y]], shape: null, el: null };
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!draft) return;
+    const p = toCanvas(e);
+    if (tool === 'poly') {
+      const last = draft.points[draft.points.length - 1];
+      if (Math.hypot(p.x - last[0], p.y - last[1]) >= 4) draft.points.push([p.x, p.y]);
+      draft.shape = { type: 'poly', points: draft.points };
+    } else {
+      draft.shape = boxShape(draft.start, p, e.shiftKey);
+    }
+    draft.el = shapeEl(draft.shape);
+    draft.el.classList.add('draft');
+    render();
+  });
+  svg.addEventListener('pointerup', () => {
+    let shape = draft && draft.shape;
+    draft = null;
+    if (shape && shape.type === 'poly') shape = { type: 'poly', points: simplify(shape.points, 2.5).slice(0, 200) };
+    if (shape && bigEnough(shape)) {
+      zones.push(shape);
+      selected = zones.length - 1;
+      changed();
+    } else {
+      render();
+    }
+  });
+  svg.addEventListener('pointercancel', () => { draft = null; render(); });
+
+  function removeSelected() {
+    if (selected < 0) return;
+    zones.splice(selected, 1);
+    selected = -1;
+    changed();
+  }
+  document.querySelectorAll('[data-zone-tool]').forEach(b => b.addEventListener('click', () => setTool(b.dataset.zoneTool)));
+  $('btnZoneDelete').addEventListener('click', removeSelected);
+  $('btnZoneClear').addEventListener('click', () => {
+    if (!zones.length) return;
+    zones = [];
+    selected = -1;
+    changed();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (!document.querySelector('.page[data-page="emotes"].active')) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName)) return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selected >= 0) {
+      e.preventDefault();
+      removeSelected();
+    } else if (e.key === 'Escape') {
+      if (tool) setTool(tool);
+      selected = -1;
+      render();
+    }
+  });
+  render();
+
+  const copy = (list) => (Array.isArray(list) ? JSON.parse(JSON.stringify(list)) : []);
+  return {
+    get: () => copy(zones),
+    set(list) {
+      zones = copy(list);
+      selected = -1;
+      render();
+    },
+  };
+})();
 
 // ---------------------------------------------------------------- game (элемент «Текущая игра» и время в играх)
 

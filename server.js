@@ -29,6 +29,7 @@ let config = {
   oldFilesExpireDays: 7,
   emoteDisplaySeconds: 6,
   emoteSize: 150,
+  emoteExcludeZones: [],
   greetingDisplaySeconds: 6,
   greetingVolume: 70,
   greetingFontFamily: "Arial",
@@ -169,6 +170,8 @@ const clampNum = (value, min, max, fallback) => {
 };
 const EMOTE_DISPLAY_MS = Math.round(clampNum(config.emoteDisplaySeconds, 1, 120, 6) * 1000);
 const EMOTE_SIZE = Math.round(clampNum(config.emoteSize, 24, 600, 150));
+// Зоны без эмоутов (рисуются в панели поверх предпросмотра) — уходят оверлею в каждом событии эмоута
+const EMOTE_ZONES = Array.isArray(config.emoteExcludeZones) ? config.emoteExcludeZones : [];
 const GREETING_DISPLAY_MS = Math.round(clampNum(config.greetingDisplaySeconds, 1, 120, 6) * 1000);
 const GREETING_VOLUME = clampNum(config.greetingVolume, 0, 100, 70) / 100;
 // Оформление приветствия уходит в оверлей вместе с каждым приветствием
@@ -2070,6 +2073,7 @@ client.on("message", async (channel, tags, message, self) => {
                 boostScaleStep: EMOTE_BOOST_SCALE_STEP,
                 displayDurationMs: EMOTE_DISPLAY_MS,
                 size: EMOTE_SIZE,
+                ...(EMOTE_ZONES.length ? { zones: EMOTE_ZONES } : {}),
               });
             }
           }

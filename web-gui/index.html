@@ -234,6 +234,14 @@
       background-size: 20px 20px;
     }
     /* color-scheme как у страницы оверлея: при несовпадении со страницей панели (dark) Chrome подкладывает под iframe белый фон */
+    .zone-layer { position: absolute; left: 0; top: 0; pointer-events: none; }
+    .zone-layer.drawing { pointer-events: all; cursor: crosshair; touch-action: none; }
+    .zone-layer .zone { fill: rgba(255, 92, 92, .18); stroke: #ff5c5c; stroke-width: 2; stroke-dasharray: 8 6; vector-effect: non-scaling-stroke; pointer-events: all; cursor: pointer; }
+    .zone-layer.drawing .zone { pointer-events: none; }
+    .zone-layer .zone.selected { fill: rgba(255, 92, 92, .34); stroke-dasharray: none; stroke-width: 3; }
+    .zone-layer .zone.draft { fill: rgba(145, 71, 255, .22); stroke: var(--accent); }
+    .zone-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 12px; }
+    .zone-tools .btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
     .stage iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: transparent; color-scheme: light; }
     .swatch { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); cursor: pointer; }
     .swatch input[type=color] {
@@ -750,6 +758,7 @@
             <p class="desc">Эмоуты из чата так появятся в OBS. Учитывает несохранённые настройки и чёрный список.</p>
             <div class="stage" id="emoteStage" data-w="900" data-h="600">
               <iframe id="emoteFrame" src="/overlay/emotes.html?preview" title="Предпросмотр эмоутов"></iframe>
+              <svg class="zone-layer" id="zoneLayer" viewBox="0 0 900 600" preserveAspectRatio="none"></svg>
             </div>
             <div class="sentence" style="margin-top:10px">
               <button class="btn btn-primary" id="btnPreviewEmote">Эмоут</button>
@@ -757,6 +766,15 @@
               <button class="btn" id="btnPreviewBoost" title="Три зрителя подряд отправляют один эмоут">Повтор ×3</button>
               <button class="btn btn-ghost" id="btnPreviewClear">Очистить</button>
             </div>
+            <div class="zone-tools">
+              <b>Зоны без эмоутов:</b>
+              <button class="btn btn-sm" type="button" data-zone-tool="rect" title="Протяните рамку на предпросмотре">▭ Прямоугольник</button>
+              <button class="btn btn-sm" type="button" data-zone-tool="ellipse" title="Протяните рамку на предпросмотре; с Shift — ровный круг">◯ Круг</button>
+              <button class="btn btn-sm" type="button" data-zone-tool="poly" title="Обведите область мышью">✎ Нарисовать</button>
+              <button class="btn btn-sm btn-ghost" type="button" id="btnZoneDelete" disabled>Удалить</button>
+              <button class="btn btn-sm btn-ghost" type="button" id="btnZoneClear" disabled>Удалить все</button>
+            </div>
+            <p class="desc" style="margin:8px 0 0">Выберите инструмент и обведите на предпросмотре место, где эмоутов быть не должно — например, лицо на вебке. Клик по зоне — выбрать, Delete — удалить, Esc — выйти из рисования. Не забудьте сохранить.</p>
           </div>
         </aside>
       </div>
