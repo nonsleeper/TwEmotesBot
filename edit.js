@@ -19,6 +19,7 @@ const FRAME_MS = 33; // ~30 кадров в секунду в OBS
 const MAX_POWER = 2.5; // во сколько раз максимум можно «разогнать» эдит повторными наградами
 const MAX_LOOK = 3; // предел силы эффектов вместе с editIntensity — дальше картинка уже не читается
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // fs.rmSync в Node 24 на Windows молча ничего не делает, если в пути есть кириллица (папка «Новая папка» и т.п.),
 // поэтому удаляем через unlinkSync
@@ -503,6 +504,9 @@ class EditController {
     this.session = null;
     this.cooldownUntil = 0;
     this.busy = false;
+    this.inflight = Promise.resolve(); // пакет последнего кадра, ещё не применённый OBS
+    this.starting = null;              // идущий запуск эдита
+    this.ending = null;                // идущее завершение (возврат вебки на место)
     this.lastLevelAt = 0;
 
     this.obs.on("ready", () => {
@@ -632,6 +636,11 @@ class EditController {
   // Старт по команде (проверяет паузу), из панели или за баллы (force — без паузы).
   // stack — повтор во время эдита прибавляет время и усиливает эффекты на boost (0.25 = +25%)
   async start({ by = "", duration, force = false, stack = false, boost = 0 } = {}) {
+    // Запуски — по очереди: покупка, пришедшая, пока предыдущая ещё запускает эдит, его продлевает, а не запускает
+    // второй параллельно (тот запомнил бы уже сдвинутую вебку как «исходную» и вернул бы её туда же).
+    // И новый эдит ждёт, пока прошлый вернёт вебку на место.
+    while (this.starting) await this.starting.catch(() => {});
+    if (this.ending) await this.ending;
     if (!this.cfg || !this.cfg.enabled) throw new Error("Эдит выключен в настройках");
     if (!this.cfg.camera) throw new Error("Не выбран источник камеры");
     if (!this.obs.status().connected) throw new Error(this.obs.status().error || "Нет связи с OBS");
@@ -650,7 +659,15 @@ class EditController {
     if (!force && Date.now() < this.cooldownUntil) {
       throw new Error(`Эдит отдыхает ещё ${Math.ceil((this.cooldownUntil - Date.now()) / 1000)} с`);
     }
+    this.starting = this.beginSession({ by, duration, force });
+    try {
+      return await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
 
+  async beginSession({ by, duration, force }) {
     const item = await this.findCameraItem();
     if (!item) throw new Error(`Источника «${this.cfg.camera}» нет в текущей сцене OBS`);
     const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", item);
@@ -672,6 +689,7 @@ class EditController {
       beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force, power: 1,
       filters, lastLutKey: null, lastSharp: null, beats: 0, frames: 0, skipped: 0,
     };
+    clearInterval(this.timer);
     this.timer = setInterval(() => this.frame(), FRAME_MS);
     this.log(`[EDIT] Started${by ? ` by ${by}` : ""} for ${Math.round((this.session.endsAt - Date.now()) / 1000)}s on "${this.cfg.camera}"`);
     return { started: true };
@@ -689,20 +707,43 @@ class EditController {
     this.session = null;
     clearInterval(this.timer);
     if (s.chatTriggered) this.cooldownUntil = Date.now() + this.cfg.cooldown * 1000;
-    if (restore) {
-      try {
-        await this.obs.batch([
-          { requestType: "SetSceneItemTransform", requestData: { ...s.item, sceneItemTransform: s.original } },
-          ...this.filterRequests(s.filters, false),
-        ]);
-        removeFile(this.restoreFile);
-      } catch (err) {
-        this.log(`[EDIT] Could not restore the camera now (${err.message}) — will retry on the next connection`);
+    this.ending = (async () => {
+      if (restore) {
+        try {
+          // OBS выполняет запросы в пуле потоков: кадр, отправленный раньше, может примениться позже возврата
+          // и оставить вебку сдвинутой — поэтому сначала ждём последний кадр, а после возврата проверяем
+          await Promise.race([this.inflight, sleep(1500)]);
+          await this.obs.batch([
+            { requestType: "SetSceneItemTransform", requestData: { ...s.item, sceneItemTransform: s.original } },
+            ...this.filterRequests(s.filters, false),
+          ]);
+          await this.verifyRestored(s);
+          removeFile(this.restoreFile);
+        } catch (err) {
+          this.log(`[EDIT] Could not restore the camera now (${err.message}) — will retry on the next connection`);
+        }
       }
+      // OBS не успевал применять кадры — удары могли теряться, это видно по логу
+      const slow = s.frames ? Math.round(s.skipped / s.frames * 100) : 0;
+      this.log(`[EDIT] Ended: ${reason} (${s.beats} beats${slow >= 10 ? `, ${slow}% of frames skipped: OBS was too slow to apply them` : ""})`);
+    })();
+    try {
+      await this.ending;
+    } finally {
+      this.ending = null;
     }
-    // OBS не успевал применять кадры — удары могли теряться, это видно по логу
-    const slow = s.frames ? Math.round(s.skipped / s.frames * 100) : 0;
-    this.log(`[EDIT] Ended: ${reason} (${s.beats} beats${slow >= 10 ? `, ${slow}% of frames skipped: OBS was too slow to apply them` : ""})`);
+  }
+
+  // Вебка действительно вернулась? Нет — ставим исходное положение ещё раз (до 3 попыток)
+  async verifyRestored(s) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", s.item);
+      const off = Object.keys(s.original).filter(k => Math.abs((T[k] ?? 0) - s.original[k]) > 0.01);
+      if (!off.length) return;
+      this.log(`[EDIT] Camera not back in place yet (${off.join(", ")}), restoring again`);
+      await sleep(100);
+      await this.obs.request("SetSceneItemTransform", { ...s.item, sceneItemTransform: s.original });
+    }
   }
 
   async restoreAfterCrash() {
@@ -779,7 +820,7 @@ class EditController {
     }
     if (!requests.length) return;
     this.busy = true;
-    this.obs.batch(requests).catch(() => {}).finally(() => { this.busy = false; });
+    this.inflight = this.obs.batch(requests).catch(() => {}).finally(() => { this.busy = false; });
   }
 
   // При выключении бота: вернуть камеру и дождаться ответа OBS (не дольше timeoutMs)
