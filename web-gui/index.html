@@ -337,6 +337,7 @@
       display: flex; align-items: center; justify-content: center; padding: 16px;
     }
     .modal-back[hidden] { display: none; }
+    .tab[hidden] { display: none; }
     .modal {
       background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
       width: 100%; max-width: 620px; max-height: calc(100vh - 32px); display: flex; flex-direction: column; gap: 10px;
@@ -444,7 +445,8 @@
       <button class="tab" data-tab="connection">Подключение<span class="badge" data-badge="connection"></span></button>
       <button class="tab" data-tab="greetings">Приветствия<span class="badge" data-badge="greetings"></span></button>
       <button class="tab" data-tab="emotes">Эмоуты<span class="badge" data-badge="emotes"></span></button>
-      <button class="tab" data-tab="game">Игра<span class="badge" data-badge="game"></span></button>
+      <!-- «Игра» пока скрыта: оверлей и учёт времени работают, но настраивать их из панели нельзя -->
+      <button class="tab" data-tab="game" hidden>Игра<span class="badge" data-badge="game"></span></button>
       <button class="tab" data-tab="edit">Эдит<span class="badge" data-badge="edit"></span></button>
       <button class="tab" data-tab="console">Консоль</button>
     </nav>

@@ -1539,6 +1539,8 @@ setInterval(() => checkForUpdate(), UPDATE_CHECK_EVERY_MS);
 (async () => {
   let initialTab = 'connection';
   try { initialTab = localStorage.getItem('emotesbot.tab') || initialTab; } catch {}
+  const savedTab = document.querySelector(`.tab[data-tab="${initialTab}"]`);
+  if (!savedTab || savedTab.hidden) initialTab = 'connection';
   showTab(initialTab);
   renderStatus();
 
