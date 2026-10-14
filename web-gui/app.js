@@ -39,7 +39,7 @@ const KEY_TAB = {
   gameFontFamily: 'game', gameFontSize: 'game', gameBold: 'game', gameTextColor: 'game',
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
   editEnabled: 'connection', moduleEmotes: 'connection', moduleGreetings: 'connection', moduleGame: 'connection',
-  obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
+  obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editSources: 'edit',
   editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
   editIntensity: 'edit', editEffects: 'edit', editLatencyMs: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
   editRewardEnabled: 'edit', editRewardTitle: 'edit', editRewardCost: 'edit', editRewardDuration: 'edit', editRewardBoost: 'edit',
@@ -457,7 +457,7 @@ function listValues(key) {
 function writeForm(cfg) {
   setFontValue(cfg.greetingFontFamily);
   setFontValue(cfg.gameFontFamily, 'gameFont');
-  setSelectValue($('editCamera'), cfg.editCameraSource);
+  renderEditSources(state.editVideo, cfg.editSources);
   setSelectValue($('editAudio'), cfg.editAudioSource);
   for (const el of document.querySelectorAll('[data-list]')) {
     el.checked = Array.isArray(cfg[el.dataset.list]) && cfg[el.dataset.list].includes(el.value);
@@ -1498,6 +1498,32 @@ function fillSourceSelect(select, items, current) {
   setSelectValue(select, current);
 }
 
+// Источники видео для эдита — галочки (data-list="editSources"): видео из OBS плюс уже выбранные, даже если их
+// сейчас нет в OBS (переименовали, удалили) — чтобы сохранение не выбросило их молча
+state.editVideo = [];
+function selectedEditSources() {
+  return document.querySelector('[data-list="editSources"]')
+    ? listValues('editSources')
+    : ((state.saved && state.saved.editSources) || []);
+}
+function renderEditSources(available, selected) {
+  const chosen = new Set(selected || []);
+  const names = [...new Set([...(available || []), ...chosen])];
+  const box = $('editSourceList');
+  if (!names.length) {
+    box.replaceChildren(el('span', { style: 'color:var(--dim)', text: 'Нажмите «Обновить список из OBS»' }));
+    return;
+  }
+  box.replaceChildren(...names.map(name => {
+    const input = el('input', { type: 'checkbox', value: name });
+    input.dataset.list = 'editSources';
+    input.checked = chosen.has(name);
+    input.addEventListener('change', updateDirty);
+    const missing = (available || []).length && !available.includes(name);
+    return el('label', { class: 'check' }, [input, el('span', { class: missing ? 'missing' : '', text: missing ? `${name} (нет в OBS)` : name })]);
+  }));
+}
+
 async function loadEditSources() {
   const hint = $('editSourcesHint');
   hint.textContent = 'Спрашиваю OBS…';
@@ -1505,7 +1531,8 @@ async function loadEditSources() {
     const res = await fetch('/api/edit/sources');
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
-    fillSourceSelect($('editCamera'), data.video, $('editCamera').value || (state.saved && state.saved.editCameraSource));
+    state.editVideo = data.video.map(v => v.name);
+    renderEditSources(state.editVideo, selectedEditSources());
     fillSourceSelect($('editAudio'), data.audio, $('editAudio').value || (state.saved && state.saved.editAudioSource));
     hint.textContent = `В OBS: ${data.video.length} видео, ${data.audio.length} со звуком`;
     updateDirty();

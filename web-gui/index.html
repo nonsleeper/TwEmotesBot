@@ -131,6 +131,8 @@
 
     .sentence { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; line-height: 2.2; }
 
+    .source-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; padding: 8px 10px; background: var(--field); border: 1px solid var(--border); border-radius: 8px; }
+    .source-list .missing { color: var(--warn); }
     .check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; line-height: 1.4; }
     .check input { margin-top: 3px; accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
     .check small { display: block; color: var(--dim); }
@@ -909,9 +911,9 @@
             <h2>Источники</h2>
             <div class="grid-2">
               <div class="field">
-                <label for="editCamera">Камера</label>
-                <select class="input" id="editCamera" data-key="editCameraSource"></select>
-                <div class="hint">Источник вебки в OBS. Он должен быть в сцене, которая идёт в эфир.</div>
+                <label>Видео для эффектов</label>
+                <div class="source-list" id="editSourceList"><span style="color:var(--dim)">Нажмите «Обновить список из OBS»</span></div>
+                <div class="hint">Эффекты идут на все отмеченные источники сразу. Они должны быть в сцене, которая идёт в эфир.</div>
               </div>
               <div class="field">
                 <label for="editAudio">Звук для битов</label>

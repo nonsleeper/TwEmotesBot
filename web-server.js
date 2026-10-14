@@ -59,7 +59,7 @@ const DEFAULT_CONFIG = {
   obsHost: "127.0.0.1",
   obsPort: 4455,
   obsPassword: "",
-  editCameraSource: "",
+  editSources: [],
   editAudioSource: "",
   editCommand: "!edit",
   editDuration: 30,
@@ -104,7 +104,13 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, "utf8");
-      config = { ...DEFAULT_CONFIG, ...JSON.parse(data) };
+      const fromFile = JSON.parse(data);
+      // старый конфиг: один источник эдита (editCameraSource) → список editSources
+      if (!Array.isArray(fromFile.editSources) && typeof fromFile.editCameraSource === "string" && fromFile.editCameraSource) {
+        fromFile.editSources = [fromFile.editCameraSource];
+      }
+      delete fromFile.editCameraSource;
+      config = { ...DEFAULT_CONFIG, ...fromFile };
       console.log("[CONFIG] Loaded from file");
     }
   } catch (err) {
@@ -247,7 +253,9 @@ function sanitizeConfig(input) {
     obsHost: typeof src.obsHost === "string" && /^[\w.-]{1,100}$/.test(src.obsHost.trim()) ? src.obsHost.trim() : DEFAULT_CONFIG.obsHost,
     obsPort: clamp(num(src.obsPort, DEFAULT_CONFIG.obsPort, { min: 1, int: true }), 1, 65535),
     obsPassword: typeof src.obsPassword === "string" ? src.obsPassword.slice(0, 200) : "",
-    editCameraSource: typeof src.editCameraSource === "string" ? src.editCameraSource.slice(0, 200) : "",
+    // источники видео для эдита; старый конфиг хранил один — editCameraSource
+    editSources: [...new Set((Array.isArray(src.editSources) ? src.editSources : typeof src.editCameraSource === "string" && src.editCameraSource ? [src.editCameraSource] : [])
+      .filter(n => typeof n === "string" && n.trim()).map(n => n.slice(0, 200)))].slice(0, 20),
     editAudioSource: typeof src.editAudioSource === "string" ? src.editAudioSource.slice(0, 200) : "",
     editCommand: typeof src.editCommand === "string" && src.editCommand.trim() ? src.editCommand.trim().split(/\s+/)[0].slice(0, 40) : DEFAULT_CONFIG.editCommand,
     editDuration: clamp(num(src.editDuration, DEFAULT_CONFIG.editDuration, { min: 5, int: true }), 5, 600),

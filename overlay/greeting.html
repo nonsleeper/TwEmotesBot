@@ -108,6 +108,12 @@
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (data.type === "hello") {
+            // бота обновили — берём свежую страницу оверлея
+            if (window.__overlayVersion && window.__overlayVersion !== data.version) location.reload();
+            window.__overlayVersion = data.version;
+            return;
+          }
           if (data.type === "ping") {
             lastPingTs = Date.now();
             return;

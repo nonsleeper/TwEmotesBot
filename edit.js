@@ -20,6 +20,11 @@ const MAX_POWER = 2.5; // во сколько раз максимум можно
 const MAX_LOOK = 3; // предел силы эффектов вместе с editIntensity — дальше картинка уже не читается
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const editSourcesOf = (cfg) => {
+  // старый конфиг хранил один источник (editCameraSource); пустой editSources из значений по умолчанию его не перекрывает
+  const list = Array.isArray(cfg.editSources) && cfg.editSources.length ? cfg.editSources : cfg.editCameraSource ? [cfg.editCameraSource] : [];
+  return [...new Set(list.filter(n => typeof n === "string" && n))];
+};
 
 // fs.rmSync в Node 24 на Windows молча ничего не делает, если в пути есть кириллица (папка «Новая папка» и т.п.),
 // поэтому удаляем через unlinkSync
@@ -524,7 +529,8 @@ class EditController {
   applyConfig(cfg) {
     this.cfg = {
       enabled: cfg.editEnabled === true,
-      camera: cfg.editCameraSource || "",
+      // источники видео, к которым применяется эдит (раньше был один — editCameraSource)
+      sources: editSourcesOf(cfg),
       audio: cfg.editAudioSource || "",
       duration: clamp(Number(cfg.editDuration) || 30, 5, 600),
       cooldown: clamp(Number(cfg.editCooldown) || 0, 0, 3600),
@@ -582,15 +588,15 @@ class EditController {
     return { video, audio: [...audio, ...video.filter(v => /ffmpeg|vlc|browser|game_capture|window_capture|dshow/.test(v.kind))] };
   }
 
-  // Элемент сцены с камерой: в текущей сцене, в группах и вложенных сценах (до 3 уровней)
-  async findCameraItem() {
+  // Элемент сцены с источником: в текущей сцене, в группах и вложенных сценах (до 3 уровней)
+  async findSceneItem(sourceName) {
     const { currentProgramSceneName } = await this.obs.request("GetCurrentProgramScene");
     const seen = new Set();
     const search = async (sceneName, isGroup, depth) => {
       if (depth > 3 || seen.has(sceneName)) return null;
       seen.add(sceneName);
       const { sceneItems } = await this.obs.request(isGroup ? "GetGroupSceneItemList" : "GetSceneItemList", { sceneName });
-      const direct = sceneItems.find(it => it.sourceName === this.cfg.camera);
+      const direct = sceneItems.find(it => it.sourceName === sourceName);
       if (direct) return { sceneName, sceneItemId: direct.sceneItemId };
       for (const it of sceneItems) {
         if (it.isGroup || it.sourceType === "OBS_SOURCE_TYPE_SCENE") {
@@ -611,27 +617,32 @@ class EditController {
     return keys;
   }
 
-  async ensureFilters(keys) {
+  async ensureFilters(sourceName, keys) {
     for (const key of keys) {
       const f = FILTERS[key];
       try {
-        await this.obs.request("GetSourceFilter", { sourceName: this.cfg.camera, filterName: f.name });
+        await this.obs.request("GetSourceFilter", { sourceName, filterName: f.name });
       } catch (err) {
         if (err.code !== 600) throw err; // 600 — ResourceNotFound: фильтра ещё нет
-        await this.obs.request("CreateSourceFilter", {
-          sourceName: this.cfg.camera, filterName: f.name, filterKind: f.kind, filterSettings: f.neutral,
-        });
-        this.log(`[EDIT] Added filter "${f.name}" (${f.kind}) to "${this.cfg.camera}"`);
+        await this.obs.request("CreateSourceFilter", { sourceName, filterName: f.name, filterKind: f.kind, filterSettings: f.neutral });
+        this.log(`[EDIT] Added filter "${f.name}" (${f.kind}) to "${sourceName}"`);
       }
     }
   }
 
-  filterRequests(keys, enabled) {
-    const cam = this.cfg.camera;
+  filterRequests(sourceName, keys, enabled) {
     return keys.flatMap(key => [
-      { requestType: "SetSourceFilterSettings", requestData: { sourceName: cam, filterName: FILTERS[key].name, filterSettings: FILTERS[key].neutral, overlay: true } },
-      { requestType: "SetSourceFilterEnabled", requestData: { sourceName: cam, filterName: FILTERS[key].name, filterEnabled: enabled } },
+      { requestType: "SetSourceFilterSettings", requestData: { sourceName, filterName: FILTERS[key].name, filterSettings: FILTERS[key].neutral, overlay: true } },
+      { requestType: "SetSourceFilterEnabled", requestData: { sourceName, filterName: FILTERS[key].name, filterEnabled: enabled } },
     ]);
+  }
+
+  // Возврат источника как было: положение/масштаб/обрезка и фильтры — нейтральные и выключенные
+  restoreRequests(target) {
+    return [
+      { requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: target.original } },
+      ...this.filterRequests(target.source, target.filters, false),
+    ];
   }
 
   // Старт по команде (проверяет паузу), из панели или за баллы (force — без паузы).
@@ -639,11 +650,11 @@ class EditController {
   async start({ by = "", duration, force = false, stack = false, boost = 0 } = {}) {
     // Запуски — по очереди: покупка, пришедшая, пока предыдущая ещё запускает эдит, его продлевает, а не запускает
     // второй параллельно (тот запомнил бы уже сдвинутую вебку как «исходную» и вернул бы её туда же).
-    // И новый эдит ждёт, пока прошлый вернёт вебку на место.
+    // И новый эдит ждёт, пока прошлый вернёт источники на место.
     while (this.starting) await this.starting.catch(() => {});
     if (this.ending) await this.ending;
     if (!this.cfg || !this.cfg.enabled) throw new Error("Эдит выключен в настройках");
-    if (!this.cfg.camera) throw new Error("Не выбран источник камеры");
+    if (!this.cfg.sources.length) throw new Error("Не выбраны источники видео");
     if (!this.obs.status().connected) throw new Error(this.obs.status().error || "Нет связи с OBS");
     if (this.session) {
       const s = this.session;
@@ -669,34 +680,44 @@ class EditController {
   }
 
   async beginSession({ by, duration, force }) {
-    const item = await this.findCameraItem();
-    if (!item) throw new Error(`Источника «${this.cfg.camera}» нет в текущей сцене OBS`);
-    const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", item);
-    const original = {
-      positionX: T.positionX, positionY: T.positionY, rotation: T.rotation, scaleX: T.scaleX, scaleY: T.scaleY,
-      cropLeft: T.cropLeft, cropRight: T.cropRight, cropTop: T.cropTop, cropBottom: T.cropBottom,
-      ...(T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE" ? { boundsWidth: T.boundsWidth, boundsHeight: T.boundsHeight } : {}),
-    };
-    // если бот упадёт посреди эдита — при следующем подключении вернём как было
-    fs.writeFileSync(this.restoreFile, JSON.stringify({ ...item, original }), "utf8");
     const filters = this.neededFilters();
-    await this.ensureFilters(filters);
-    await this.obs.batch(this.filterRequests(filters, true));
+    const targets = [];
+    const missing = [];
+    for (const source of this.cfg.sources) {
+      const item = await this.findSceneItem(source);
+      if (!item) { missing.push(source); continue; }
+      const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", item);
+      const original = {
+        positionX: T.positionX, positionY: T.positionY, rotation: T.rotation, scaleX: T.scaleX, scaleY: T.scaleY,
+        cropLeft: T.cropLeft, cropRight: T.cropRight, cropTop: T.cropTop, cropBottom: T.cropBottom,
+        ...(T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE" ? { boundsWidth: T.boundsWidth, boundsHeight: T.boundsHeight } : {}),
+      };
+      targets.push({ source, item, T, original, filters, lastColor: null, lastLutKey: null, lastSharp: null });
+    }
+    if (!targets.length) {
+      throw new Error(missing.length > 1 ? `Источников ${missing.map(n => `«${n}»`).join(", ")} нет в текущей сцене OBS` : `Источника «${missing[0]}» нет в текущей сцене OBS`);
+    }
+    if (missing.length) this.log(`[EDIT] Not in the current scene, skipped: ${missing.join(", ")}`);
+    // если бот упадёт посреди эдита — при следующем подключении вернём как было
+    fs.writeFileSync(this.restoreFile, JSON.stringify({ targets: targets.map(t => ({ ...t.item, source: t.source, original: t.original })) }), "utf8");
+    for (const t of targets) await this.ensureFilters(t.source, filters);
+    await this.obs.batch(targets.flatMap(t => this.filterRequests(t.source, filters, true)));
 
     this.session = {
-      item, T, original, by,
+      targets, by,
       startedAt: Date.now(),
       endsAt: Date.now() + (duration || this.cfg.duration) * 1000,
-      beat: null, effect: "punch", dir: 1, seed: Math.random(), lastColor: null, chatTriggered: !force, power: 1,
-      filters, lastLutKey: null, lastSharp: null, beats: 0, frames: 0, skipped: 0,
+      beat: null, effect: "punch", dir: 1, seed: Math.random(), chatTriggered: !force, power: 1,
+      filters, beats: 0, frames: 0, skipped: 0,
     };
     clearInterval(this.timer);
     this.timer = setInterval(() => this.frame(), FRAME_MS);
-    this.log(`[EDIT] Started${by ? ` by ${by}` : ""} for ${Math.round((this.session.endsAt - Date.now()) / 1000)}s on "${this.cfg.camera}"`);
-    return { started: true };
+    this.log(`[EDIT] Started${by ? ` by ${by}` : ""} for ${Math.round((this.session.endsAt - Date.now()) / 1000)}s on ${targets.map(t => `"${t.source}"`).join(", ")}`);
+    return { started: true, sources: targets.map(t => t.source) };
   }
 
   async stop(reason = "остановлен") {
+    if (this.starting) await this.starting.catch(() => {}); // «Стоп» во время запуска — останавливаем запущенное
     if (!this.session) return { stopped: false };
     await this.endSession(reason, { restore: true });
     return { stopped: true };
@@ -712,16 +733,13 @@ class EditController {
       if (restore) {
         try {
           // OBS выполняет запросы в пуле потоков: кадр, отправленный раньше, может примениться позже возврата
-          // и оставить вебку сдвинутой — поэтому сначала ждём последний кадр, а после возврата проверяем
+          // и оставить эффект на экране — поэтому сначала ждём последний кадр, а после возврата проверяем
           await Promise.race([this.inflight, sleep(1500)]);
-          await this.obs.batch([
-            { requestType: "SetSceneItemTransform", requestData: { ...s.item, sceneItemTransform: s.original } },
-            ...this.filterRequests(s.filters, false),
-          ]);
-          await this.verifyRestored(s);
+          await this.obs.batch(s.targets.flatMap(t => this.restoreRequests(t)));
+          await this.verifyRestored(s.targets);
           removeFile(this.restoreFile);
         } catch (err) {
-          this.log(`[EDIT] Could not restore the camera now (${err.message}) — will retry on the next connection`);
+          this.log(`[EDIT] Could not restore the sources now (${err.message}) — will retry on the next connection`);
         }
       }
       // OBS не успевал применять кадры — удары могли теряться, это видно по логу
@@ -735,28 +753,44 @@ class EditController {
     }
   }
 
-  // Вебка действительно вернулась? Нет — ставим исходное положение ещё раз (до 3 попыток)
-  async verifyRestored(s) {
+  // Всё действительно вернулось? Положение — как было, фильтры эдита — выключены. Нет — повторяем (до 3 попыток)
+  async verifyRestored(targets) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", s.item);
-      const off = Object.keys(s.original).filter(k => Math.abs((T[k] ?? 0) - s.original[k]) > 0.01);
-      if (!off.length) return;
-      this.log(`[EDIT] Camera not back in place yet (${off.join(", ")}), restoring again`);
-      await sleep(100);
-      await this.obs.request("SetSceneItemTransform", { ...s.item, sceneItemTransform: s.original });
+      await sleep(attempt ? 150 : 80);
+      const fix = [];
+      for (const t of targets) {
+        const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", t.item);
+        const off = Object.keys(t.original).filter(k => Math.abs((T[k] ?? 0) - t.original[k]) > 0.01);
+        const lit = [];
+        for (const key of t.filters) {
+          const f = await this.obs.request("GetSourceFilter", { sourceName: t.source, filterName: FILTERS[key].name }).catch(() => null);
+          if (f && f.filterEnabled) lit.push(FILTERS[key].name);
+        }
+        if (off.length || lit.length) {
+          this.log(`[EDIT] "${t.source}" not back to normal yet (${[...off, ...lit].join(", ")}), restoring again`);
+          fix.push(...this.restoreRequests(t));
+        }
+      }
+      if (!fix.length) return;
+      await this.obs.batch(fix);
     }
   }
 
   async restoreAfterCrash() {
     if (!fs.existsSync(this.restoreFile) || this.session) return;
     const saved = JSON.parse(fs.readFileSync(this.restoreFile, "utf8"));
-    await this.obs.request("SetSceneItemTransform", { sceneName: saved.sceneName, sceneItemId: saved.sceneItemId, sceneItemTransform: saved.original });
-    if (this.cfg && this.cfg.camera) {
-      // каких-то фильтров может и не быть — ошибки отдельных запросов пакет не прерывают
-      await this.obs.batch(this.filterRequests(Object.keys(FILTERS), false)).catch(() => {});
+    // старый формат файла — один источник без имени
+    const targets = Array.isArray(saved.targets) ? saved.targets
+      : [{ sceneName: saved.sceneName, sceneItemId: saved.sceneItemId, original: saved.original, source: this.cfg && this.cfg.sources[0] }];
+    const requests = [];
+    for (const t of targets) {
+      requests.push({ requestType: "SetSceneItemTransform", requestData: { sceneName: t.sceneName, sceneItemId: t.sceneItemId, sceneItemTransform: t.original } });
+      if (t.source) requests.push(...this.filterRequests(t.source, Object.keys(FILTERS), false));
     }
+    // каких-то фильтров может и не быть — ошибки отдельных запросов пакет не прерывают
+    await this.obs.batch(requests).catch(() => {});
     removeFile(this.restoreFile);
-    this.log("[EDIT] Camera position restored after an interrupted edit");
+    this.log(`[EDIT] Restored ${targets.length} source(s) after an interrupted edit`);
   }
 
   frame() {
@@ -793,30 +827,29 @@ class EditController {
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
     const look = scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * s.power));
 
-    const transform = buildTransform(s.T, look);
+    // один и тот же эффект — на все источники сразу, одним пакетом
     const requests = [];
-    if (transform) requests.push({ requestType: "SetSceneItemTransform", requestData: { ...s.item, sceneItemTransform: transform } });
     const color = colorSettings(look);
-    if (!s.lastColor || Object.keys(color).some(k => Math.abs(color[k] - s.lastColor[k]) > 0.004)) {
-      s.lastColor = color;
-      requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTER_NAME, filterSettings: color, overlay: true } });
-    }
-    // LUT: файл таблицы меняем только вместе с эффектом (OBS перечитывает его), силу — ступенями по 0.1
-    if (s.filters.includes("lut")) {
-      const file = look.lut && this.luts[look.lut];
-      const amount = file ? Math.round(look.lutAmount * 10) / 10 : 0;
-      const key = amount ? `${file}|${amount}` : "off";
-      if (key !== s.lastLutKey) {
-        s.lastLutKey = key;
-        const settings = amount ? { image_path: file, clut_amount: amount } : { clut_amount: 0 };
-        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTERS.lut.name, filterSettings: settings, overlay: true } });
+    const lutFile = look.lut && this.luts[look.lut];
+    const lutAmount = lutFile ? Math.round(look.lutAmount * 10) / 10 : 0;
+    const lutKey = lutAmount ? `${lutFile}|${lutAmount}` : "off";
+    const sharp = Math.round(look.sharp * 20) / 20;
+    for (const target of s.targets) {
+      const transform = buildTransform(target.T, look);
+      if (transform) requests.push({ requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: transform } });
+      if (!target.lastColor || Object.keys(color).some(k => Math.abs(color[k] - target.lastColor[k]) > 0.004)) {
+        target.lastColor = color;
+        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTER_NAME, filterSettings: color, overlay: true } });
       }
-    }
-    if (s.filters.includes("sharp")) {
-      const sharp = Math.round(look.sharp * 20) / 20;
-      if (sharp !== s.lastSharp) {
-        s.lastSharp = sharp;
-        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: this.cfg.camera, filterName: FILTERS.sharp.name, filterSettings: { sharpness: sharp }, overlay: true } });
+      // LUT: файл таблицы меняем только вместе с эффектом (OBS перечитывает его), силу — ступенями по 0.1
+      if (target.filters.includes("lut") && lutKey !== target.lastLutKey) {
+        target.lastLutKey = lutKey;
+        const settings = lutAmount ? { image_path: lutFile, clut_amount: lutAmount } : { clut_amount: 0 };
+        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.lut.name, filterSettings: settings, overlay: true } });
+      }
+      if (target.filters.includes("sharp") && sharp !== target.lastSharp) {
+        target.lastSharp = sharp;
+        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.sharp.name, filterSettings: { sharpness: sharp }, overlay: true } });
       }
     }
     if (!requests.length) return;
@@ -833,4 +866,4 @@ class EditController {
   }
 }
 
-module.exports = { EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };
+module.exports = { editSourcesOf, EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };

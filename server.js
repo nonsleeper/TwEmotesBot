@@ -61,7 +61,7 @@ let config = {
   obsHost: "127.0.0.1",
   obsPort: 4455,
   obsPassword: "",
-  editCameraSource: "",
+  editSources: [],
   editAudioSource: "",
   editCommand: "!edit",
   editDuration: 30,
@@ -222,7 +222,10 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.static(path.join(__dirname, "overlay")));
+// страницы оверлеев — без кэша: OBS должен брать свежие после обновления бота
+app.use(express.static(path.join(__dirname, "overlay"), {
+  setHeaders: (res, file) => { if (/\.(html|js)$/.test(file)) res.setHeader("Cache-Control", "no-cache"); },
+}));
 app.use("/sounds", express.static(path.join(__dirname, "sounds")));
 app.use("/cache", express.static(path.join(__dirname, "cache")));
 
@@ -410,7 +413,7 @@ const rewards = new RewardManager({
   log: (msg) => console.log(msg),
   isAvailable: () => {
     const s = edit.state();
-    return s.enabled && s.obs.connected && Boolean(config.editCameraSource);
+    return s.enabled && s.obs.connected && edit.cfg.sources.length > 0;
   },
 });
 rewards.applyConfig(config);
@@ -476,16 +479,32 @@ function broadcastEmotes(data) {
   }
 }
 
-wssGreeting.on("connection", () => {
+// Версия файлов оверлеев. Оверлей получает её при подключении и, если она сменилась (бота обновили или поменяли
+// оверлей), перезагружается сам — иначе «Браузер» в OBS так и работал бы со старой страницей до ручного обновления
+const OVERLAY_VERSION = (() => {
+  const dir = path.join(__dirname, "overlay");
+  const hash = require("crypto").createHash("sha1");
+  for (const name of fs.readdirSync(dir).sort()) {
+    const st = fs.statSync(path.join(dir, name));
+    hash.update(`${name}:${st.size}:${st.mtimeMs}`);
+  }
+  return hash.digest("hex").slice(0, 12);
+})();
+const sendHello = (ws) => ws.send(JSON.stringify({ type: "hello", version: OVERLAY_VERSION }));
+
+wssGreeting.on("connection", (ws) => {
   console.log("[WS] Greeting overlay connected");
+  sendHello(ws);
 });
 
-wssEmotes.on("connection", () => {
+wssEmotes.on("connection", (ws) => {
   console.log("[WS] Emotes overlay connected");
+  sendHello(ws);
 });
 
 wssGame.on("connection", (ws) => {
   console.log("[WS] Game overlay connected");
+  sendHello(ws);
   ws.send(JSON.stringify(gameStatePayload()));
 });
 
