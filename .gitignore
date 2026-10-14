@@ -1,6 +1,7 @@
 # зависимости и сборки
 node_modules/
 EmotesBotTray.exe
+EmotesBotIdle.exe
 release/
 release*/
 dist/

@@ -1,7 +1,12 @@
 // Время с последнего ввода с мыши/клавиатуры (WinAPI GetLastInputInfo).
-// Node сам этого не умеет, поэтому держим один фоновый PowerShell, который раз в секунду печатает число мс.
-// Геймпад (XInput) этот счётчик не сбрасывает.
+// Node сам этого не умеет, поэтому держим один фоновый помощник, который раз в секунду печатает число мс:
+// EmotesBotIdle.exe (tray/IdleMonitor.cs, собирается trayuild.bat, несколько МБ памяти), а если его нет —
+// PowerShell с тем же кодом (~75 МБ). Геймпад (XInput) этот счётчик не сбрасывает.
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+const IDLE_EXE = path.join(__dirname, "EmotesBotIdle.exe");
 
 const PS_SCRIPT = `
 $ErrorActionPreference = 'Stop'
@@ -45,28 +50,51 @@ function startIdleMonitor({ log = console.log } = {}) {
   }
 
   const encoded = Buffer.from(PS_SCRIPT.replace("__PARENT_PID__", String(process.pid)), "utf16le").toString("base64");
+  let useExe = fs.existsSync(IDLE_EXE);
 
   function run() {
     let gotOutput = false;
+    let ended = false;
     let buffer = "";
+    let proc;
     try {
-      child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      });
+      proc = useExe
+        ? spawn(IDLE_EXE, [String(process.pid)], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] })
+        : spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], {
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
     } catch (err) {
-      log(`[GAME] Idle monitor unavailable: ${err.message}`);
+      proc = null;
+      ended = true;
+      onEnd(err);
       return;
     }
+    child = proc;
 
-    child.stdout.on("data", (chunk) => {
+    // процесс завершился или не запустился вовсе (тогда у Node бывает только «error», без «exit»)
+    function onEnd(err) {
+      if (child === proc) child = null;
+      if (stopped) return;
+      // работал и упал — перезапускаем; не дал ни одной строки — значит, не работает вовсе
+      // (exe мог не запуститься, например, его заблокировал антивирус — тогда пробуем PowerShell)
+      if (gotOutput) setTimeout(() => { if (!stopped) run(); }, 5000);
+      else if (useExe) {
+        useExe = false;
+        log(`[GAME] EmotesBotIdle.exe didn't work${err ? ` (${err.message})` : ""}, falling back to PowerShell`);
+        run();
+      } else log(`[GAME] Idle monitor unavailable${err ? `: ${err.message}` : ""}, timer ignores AFK`);
+    }
+    const end = (err) => { if (!ended) { ended = true; onEnd(err); } };
+
+    proc.stdout.on("data", (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop();
       for (const line of lines) {
         const ms = Number(line.trim());
         if (line.trim() && Number.isFinite(ms)) {
-          if (!gotOutput) log("[GAME] Idle monitor started");
+          if (!gotOutput) log(`[GAME] Idle monitor started (${useExe ? "EmotesBotIdle.exe" : "PowerShell"})`);
           gotOutput = true;
           idleMs = ms;
           updatedAt = Date.now();
@@ -74,17 +102,8 @@ function startIdleMonitor({ log = console.log } = {}) {
       }
     });
 
-    child.on("error", (err) => {
-      if (!gotOutput) log(`[GAME] Idle monitor unavailable: ${err.message}`);
-    });
-
-    child.on("exit", () => {
-      child = null;
-      if (stopped) return;
-      // работал и упал — перезапускаем; не дал ни одной строки — значит, не работает вовсе
-      if (gotOutput) setTimeout(() => { if (!stopped) run(); }, 5000);
-      else log("[GAME] Idle monitor unavailable, timer ignores AFK");
-    });
+    proc.on("error", (err) => end(err));
+    proc.on("exit", () => end(null));
   }
 
   run();

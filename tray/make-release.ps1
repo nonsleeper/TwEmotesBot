@@ -18,7 +18,7 @@ $nodeSrc = (Get-Command node).Source
 $userData = @("bot-config.json", "bot-config.json.bak", ".import-asked", "twitch-auth.json", "cache", "greetings", "games", "sounds", "tray.log")
 
 & (Join-Path $PSScriptRoot "build.bat")
-if ($LASTEXITCODE -ne 0) { throw "tray build failed" }
+if ($LASTEXITCODE -ne 0) { throw "tray/idle helper build failed" }
 
 # Save user data from the previous release (new layout: app\, old layout: release root)
 $keep = Join-Path $env:TEMP ("emotesbot-release-keep-" + [guid]::NewGuid())
@@ -34,6 +34,7 @@ New-Item -ItemType Directory $out, $app, "$out\runtime" | Out-Null
 
 Copy-Item $nodeSrc "$out\runtime\node.exe"
 Copy-Item "$root\EmotesBotTray.exe" $out
+Copy-Item "$root\EmotesBotIdle.exe" $app
 Copy-Item "$root\server.js", "$root\web-server.js", "$root\system-fonts.js", "$root\idle-monitor.js", "$root\updates.js", "$root\obs.js", "$root\edit.js",
           "$root\twitch-rewards.js",
           "$root\updater.ps1", "$root\package.json", "$root\package-lock.json", "$root\bot-config.example.json" $app
