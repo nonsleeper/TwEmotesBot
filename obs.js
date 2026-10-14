@@ -72,7 +72,7 @@ class ObsClient extends EventEmitter {
     ws.on("error", (err) => {
       if (this.ws !== ws) return;
       this.error = err.code === "ECONNREFUSED"
-        ? "OBS не отвечает: он не запущен или сервер WebSocket выключен (Инструменты → Настройки сервера WebSocket)"
+        ? "OBS не отвечает: он не запущен или сервер WebSocket выключен (Сервис → Настройки сервера WebSocket)"
         : `OBS: ${err.message}`;
     });
   }
