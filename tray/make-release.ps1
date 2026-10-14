@@ -17,7 +17,11 @@ $app = Join-Path $out "app"
 $nodeSrc = (Get-Command node).Source
 $userData = @("bot-config.json", "bot-config.json.bak", ".import-asked", "twitch-auth.json", "cache", "greetings", "games", "sounds", "tray.log")
 
-& (Join-Path $PSScriptRoot "build.bat")
+# exe собираем во временную папку: в папке проекта они могут быть заняты запущенным ботом или треем,
+# и до переноса данных пользователя — если сборка упадёт, релиз останется нетронутым
+$exeTmp = Join-Path $env:TEMP ("emotesbot-release-exe-" + [guid]::NewGuid())
+New-Item -ItemType Directory $exeTmp | Out-Null
+& (Join-Path $PSScriptRoot "build.bat") $exeTmp $exeTmp
 if ($LASTEXITCODE -ne 0) { throw "tray/idle helper build failed" }
 
 # Save user data from the previous release (new layout: app\, old layout: release root)
@@ -33,8 +37,9 @@ if (Test-Path $out) { Remove-Item $out -Recurse -Force }
 New-Item -ItemType Directory $out, $app, "$out\runtime" | Out-Null
 
 Copy-Item $nodeSrc "$out\runtime\node.exe"
-Copy-Item "$root\EmotesBotTray.exe" $out
-Copy-Item "$root\EmotesBotIdle.exe" $app
+Copy-Item (Join-Path $exeTmp "EmotesBotTray.exe") $out
+Copy-Item (Join-Path $exeTmp "EmotesBotIdle.exe") $app
+Remove-Item $exeTmp -Recurse -Force
 Copy-Item "$root\server.js", "$root\web-server.js", "$root\system-fonts.js", "$root\idle-monitor.js", "$root\updates.js", "$root\obs.js", "$root\edit.js",
           "$root\twitch-rewards.js",
           "$root\updater.ps1", "$root\package.json", "$root\package-lock.json", "$root\bot-config.example.json" $app
