@@ -38,7 +38,8 @@ const KEY_TAB = {
   gameShowBoxArt: 'game', gameShowPaused: 'game', gameHideWhenNoGame: 'game', gameIdleMinutes: 'game',
   gameFontFamily: 'game', gameFontSize: 'game', gameBold: 'game', gameTextColor: 'game',
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
-  editEnabled: 'edit', obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
+  editEnabled: 'connection', moduleEmotes: 'connection', moduleGreetings: 'connection', moduleGame: 'connection',
+  obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editCameraSource: 'edit',
   editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
   editIntensity: 'edit', editEffects: 'edit', editLatencyMs: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
   editRewardEnabled: 'edit', editRewardTitle: 'edit', editRewardCost: 'edit', editRewardDuration: 'edit', editRewardBoost: 'edit',
@@ -507,8 +508,16 @@ function applySavedConfig(cfg, { force = false } = {}) {
   state.saved = cfg;
   if (force || !wasDirty) writeForm(cfg);
   updateOverlayLinks();
+  applyModules(cfg);
   updateBanner();
   updateDirty();
+}
+
+// Модули: вкладки и ссылки на источники выключенных модулей прячем (по сохранённым настройкам, не по черновику)
+function applyModules(cfg) {
+  document.querySelectorAll('[data-module]').forEach(el => { el.hidden = !cfg[el.dataset.module]; });
+  const active = document.querySelector('.tab.active');
+  if (active && active.hidden) showTab('connection');
 }
 
 async function save() {
@@ -1109,7 +1118,9 @@ function twitchSummary() {
     return { level, text: `в чате ${run.chat}${run.emotes ? `, эмоутов: ${run.emotes}` : ''}${offline}${noGreet}` };
   }
   if (run.emotes) return { level: 'warn', text: `эмоутов: ${run.emotes}, подключение к чату…` };
-  if (run.started) return { level: 'warn', text: 'загрузка эмоутов…' };
+  // эмоуты грузятся, только если включены эмоуты или приветствия
+  const loadsEmotes = !state.saved || state.saved.moduleEmotes || state.saved.moduleGreetings;
+  if (run.started) return { level: 'warn', text: loadsEmotes ? 'загрузка эмоутов…' : 'подключение к чату…' };
   return null;
 }
 

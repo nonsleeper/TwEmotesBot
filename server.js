@@ -72,6 +72,9 @@ let config = {
   editAlwaysPunch: true,
   editBoxPulse: true,
   editBoxPulseAmount: 12,
+  moduleEmotes: true,
+  moduleGreetings: true,
+  moduleGame: false,
   editRewardEnabled: false,
   editRewardTitle: "Эдит на вебке",
   editRewardCost: 5000,
@@ -139,6 +142,13 @@ if (!config.twitchClientId || !config.twitchClientSecret) {
 }
 
 const CHANNEL = config.channel;
+// Модули: выключенный ничего не загружает и не работает в фоне (эдит включается своим editEnabled — на лету)
+const MODULES = {
+  emotes: config.moduleEmotes !== false,
+  greetings: config.moduleGreetings !== false,
+  game: config.moduleGame === true,
+};
+const onOff = (on) => (on ? "on" : "off");
 const TWITCH_CLIENT_ID = config.twitchClientId;
 const TWITCH_CLIENT_SECRET = config.twitchClientSecret;
 const PORT = config.port;
@@ -503,7 +513,8 @@ setInterval(() => {
 
 const GAMES_DIR = path.join(__dirname, "games");
 const PLAYTIME_FILE = path.join(GAMES_DIR, "playtime.json");
-const idleMonitor = startIdleMonitor();
+// монитор бездействия (отдельный процесс) нужен только «Текущей игре»
+const idleMonitor = MODULES.game ? startIdleMonitor() : { getIdleMs: () => null, available: () => false };
 
 let playtime = {};        // game_id Twitch -> { name, boxArt, seconds, lastPlayed }
 let currentGame = null;   // { id, name } — категория идущего стрима
@@ -634,9 +645,11 @@ function gameTick() {
   }
 }
 
-loadPlaytime();
-setInterval(gameTick, 1000);
-setInterval(broadcastGameState, 15 * 1000); // оверлей тикает сам, это — сверка
+if (MODULES.game) {
+  loadPlaytime();
+  setInterval(gameTick, 1000);
+  setInterval(broadcastGameState, 15 * 1000); // оверлей тикает сам, это — сверка
+}
 
 const emoteMap = new Map();
 const emoteNames = new Map(); // Map<code, id> для сохранения соответствий
@@ -1236,7 +1249,7 @@ async function updateStreamInfo() {
       throw err;
     }
 
-    updateCurrentGame(streamInfo, appAccessToken);
+    if (MODULES.game) updateCurrentGame(streamInfo, appAccessToken);
 
     if (streamInfo) {
       const newStreamId = streamInfo.id;
@@ -1272,9 +1285,9 @@ async function updateStreamInfo() {
   }
 }
 
-setInterval(updateStreamInfo, 30 * 1000);
+if (MODULES.greetings || MODULES.game) setInterval(updateStreamInfo, 30 * 1000);
 setInterval(() => {
-  if (currentStreamId) {
+  if (currentStreamId && MODULES.greetings) {
     saveGreetingsToFile(currentStreamId);
   }
 }, 5 * 60 * 1000);
@@ -1967,7 +1980,7 @@ client.on("message", async (channel, tags, message, self) => {
       .map(token => token.trim())
       .filter(Boolean);
 
-    const hasGreeting = GREETING_KEYWORDS.some(keyword => wordsLower.includes(keyword));
+    const hasGreeting = MODULES.greetings && GREETING_KEYWORDS.some(keyword => wordsLower.includes(keyword));
 
     if (hasGreeting && !hasUserGreeted(username)) {
       // без доступного эмоута приветствие всё равно показываем — одним текстом
@@ -1991,7 +2004,7 @@ client.on("message", async (channel, tags, message, self) => {
       console.log(`[GREET] ${username} already greeted (skipping)`);
     }
 
-    if (!hasGreeting) {
+    if (!hasGreeting && MODULES.emotes) {
       // Собираем все эмоуты из сообщения
       const foundEmotes = new Map();
 
@@ -2067,7 +2080,7 @@ client.on("message", async (channel, tags, message, self) => {
           console.log(`[SPAM] ${username} blocked: ${currentCount}/${EMOTE_SPAM_LIMIT} emotes in last ${EMOTE_SPAM_WINDOW_MS / 1000}s`);
         }
       }
-    } else {
+    } else if (hasGreeting && MODULES.emotes) {
       console.log(`[EMOTE] Skipping emotes - message is a greeting`);
     }
   } catch (err) {
@@ -2122,18 +2135,23 @@ function scheduleEmoteReload() {
     console.log("🎮 Twitch Bot Starting...");
     console.log("═══════════════════════════════════════════════════════\n");
 
-    ensureGreetingsDir();
+    console.log(`[MODULES] emotes: ${onOff(MODULES.emotes)}, greetings: ${onOff(MODULES.greetings)}, edit: ${onOff(config.editEnabled === true)}, game: ${onOff(MODULES.game)}`);
     ensureCacheDir();
-    cleanupOldGreetingFiles();
-    loadCachedEmoteNames();
+    if (MODULES.greetings) {
+      ensureGreetingsDir();
+      cleanupOldGreetingFiles();
+      loadSoundFiles();
+    }
 
-    loadSoundFiles();
-
-    try {
-      await loadAllEmotesForChannel(CHANNEL);
-    } catch (err) {
-      console.error("[BOOT] Emote loading failed, will retry in 60s:", err);
-      scheduleEmoteReload();
+    // эмоуты нужны и оверлею эмоутов, и приветствиям (картинка приветствия)
+    if (MODULES.emotes || MODULES.greetings) {
+      loadCachedEmoteNames();
+      try {
+        await loadAllEmotesForChannel(CHANNEL);
+      } catch (err) {
+        console.error("[BOOT] Emote loading failed, will retry in 60s:", err);
+        scheduleEmoteReload();
+      }
     }
 
     console.log("\n───────────────────────────────────────────────────────");
@@ -2170,10 +2188,12 @@ function scheduleEmoteReload() {
 
     console.log("───────────────────────────────────────────────────────\n");
 
-    try {
-      await updateStreamInfo();
-    } catch (err) {
-      console.error("[BOOT] Failed to fetch stream info:", err.message);
+    if (MODULES.greetings || MODULES.game) {
+      try {
+        await updateStreamInfo();
+      } catch (err) {
+        console.error("[BOOT] Failed to fetch stream info:", err.message);
+      }
     }
     await client.connect();
 

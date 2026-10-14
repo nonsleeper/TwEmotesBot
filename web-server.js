@@ -70,6 +70,9 @@ const DEFAULT_CONFIG = {
   editAlwaysPunch: true,
   editBoxPulse: true,
   editBoxPulseAmount: 12,
+  moduleEmotes: true,
+  moduleGreetings: true,
+  moduleGame: false,
   editRewardEnabled: false,
   editRewardTitle: "Эдит на вебке",
   editRewardCost: 5000,
@@ -242,7 +245,10 @@ function sanitizeConfig(input) {
       ? src.editRewardTitle.trim().slice(0, 45) : DEFAULT_CONFIG.editRewardTitle,
     editRewardCost: clamp(num(src.editRewardCost, DEFAULT_CONFIG.editRewardCost, { min: 1, int: true }), 1, 10000000),
     editRewardDuration: clamp(num(src.editRewardDuration, DEFAULT_CONFIG.editRewardDuration, { min: 5, int: true }), 5, 600),
-    editRewardBoost: clamp(num(src.editRewardBoost, DEFAULT_CONFIG.editRewardBoost, { int: true }), 0, 100)
+    editRewardBoost: clamp(num(src.editRewardBoost, DEFAULT_CONFIG.editRewardBoost, { int: true }), 0, 100),
+    moduleEmotes: src.moduleEmotes !== false,
+    moduleGreetings: src.moduleGreetings !== false,
+    moduleGame: src.moduleGame === true
   };
 }
 
