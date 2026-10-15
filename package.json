@@ -1,6 +1,6 @@
 {
   "name": "twitch-emotes-bot",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Twitch emotes & greetings overlay bot for OBS",
   "main": "server.js",
   "scripts": {
