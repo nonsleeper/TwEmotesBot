@@ -1710,6 +1710,9 @@ async function pollEditState() {
         ? s.sessions.map(x => `«${x.title}» ${x.remaining} с${x.power > 1 ? ` ×${x.power.toFixed(2)}` : ''}`).join(', ')
         : 'готов';
       $('editRun').style.color = s.running ? 'var(--ok)' : '';
+      // название текущего эффекта — как на плитке эффекта
+      const tile = s.effect && document.querySelector(`[data-list="editEffects"][value="${s.effect}"]`);
+      $('editEffectNow').textContent = s.effect ? (tile ? tile.parentElement.querySelector('b').textContent : s.effect) : '—';
     }
   } catch {}
   pollRewardState();

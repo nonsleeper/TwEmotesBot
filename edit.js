@@ -575,6 +575,7 @@ class EditController {
       bpm: pos ? Math.round(pos.bpm) : null,
       locked: pos ? pos.locked : false,
       beatPhase: pos ? Math.min(1, pos.u) : null,
+      effect: this.sessions.size && this.fx ? this.fx.effect : null, // текущий эффект (для «Состояния» в панели)
       effects: EFFECT_KEYS,
     };
   }
@@ -843,14 +844,17 @@ class EditController {
     base.zoom = Math.max(base.zoom || 1, 1.04);
     // зум-удар на каждый бит под любым эффектом; если эффект сам зумит сильнее — остаётся его зум
     if (this.cfg.alwaysPunch && pos && u <= 1.15) base.zoom = Math.max(base.zoom, 1 + 0.32 * Math.exp(-Math.min(u, 1) * 7));
-    // пульс рамки: на бит источник подрастает и отпружинивает обратно (с лёгким недолётом перед следующим битом)
-    if (this.cfg.boxPulse && pos && u <= 1.15) {
-      const uu = Math.min(u, 1);
-      base.box = 1 + this.cfg.boxPulse * Math.exp(-uu * 5) * Math.cos(uu * Math.PI * 1.6);
-    }
     base.ox = (base.ox || 0) + Math.sin(t * 2.4) * 0.004;
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
-    return scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * power));
+    const look = scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * power));
+    // пульс рамки: на бит источник подрастает и отпружинивает обратно (с лёгким недолётом перед следующим битом).
+    // Ровно на заданные проценты — без умножения на силу и усиление: иначе 25% превращались в +42…75% и рамку
+    // заметно «кидало» по сцене
+    if (this.cfg.boxPulse && pos && u <= 1.15) {
+      const uu = Math.min(u, 1);
+      look.box = 1 + this.cfg.boxPulse * Math.exp(-uu * 5) * Math.cos(uu * Math.PI * 1.6);
+    }
+    return look;
   }
 
   frame() {
