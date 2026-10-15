@@ -20,11 +20,28 @@ const MAX_POWER = 2.5; // во сколько раз максимум можно
 const MAX_LOOK = 3; // предел силы эффектов вместе с editIntensity — дальше картинка уже не читается
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const editSourcesOf = (cfg) => {
-  // старый конфиг хранил один источник (editCameraSource); пустой editSources из значений по умолчанию его не перекрывает
-  const list = Array.isArray(cfg.editSources) && cfg.editSources.length ? cfg.editSources : cfg.editCameraSource ? [cfg.editCameraSource] : [];
-  return [...new Set(list.filter(n => typeof n === "string" && n))];
-};
+// Старые настройки эдита (запуск командой, источники editSources / ещё раньше один editCameraSource, одна награда
+// editReward*) → список наград editRewards, у каждой свои источники. Меняет и возвращает cfg.
+const OLD_EDIT_KEYS = ["editSources", "editCameraSource", "editRewardEnabled", "editRewardTitle", "editRewardCost",
+  "editRewardDuration", "editRewardBoost", "editCommand", "editWho", "editCooldown", "editDuration"];
+function migrateEditConfig(cfg) {
+  if (!Array.isArray(cfg.editRewards)) {
+    const list = Array.isArray(cfg.editSources) && cfg.editSources.length ? cfg.editSources : cfg.editCameraSource ? [cfg.editCameraSource] : [];
+    const sources = [...new Set(list.filter(n => typeof n === "string" && n))];
+    const hadReward = ["editRewardTitle", "editRewardCost", "editRewardEnabled"].some(k => k in cfg);
+    cfg.editRewards = sources.length || hadReward ? [{
+      key: "r1",
+      title: cfg.editRewardTitle || "Эдит на вебке",
+      cost: cfg.editRewardCost || 5000,
+      duration: cfg.editRewardDuration || cfg.editDuration || 30,
+      boost: cfg.editRewardBoost ?? 25,
+      sources,
+      enabled: cfg.editRewardEnabled === true,
+    }] : [];
+  }
+  for (const k of OLD_EDIT_KEYS) delete cfg[k];
+  return cfg;
+}
 
 // fs.rmSync в Node 24 на Windows молча ничего не делает, если в пути есть кириллица (папка «Новая папка» и т.п.),
 // поэтому удаляем через unlinkSync
@@ -506,12 +523,12 @@ class EditController {
       log(`[EDIT] Could not write LUT files: ${err.message}`);
     }
     this.cfg = null;
-    this.session = null;
-    this.cooldownUntil = 0;
+    this.sessions = new Map();         // key награды → идущий эдит
+    this.timer = null;
     this.busy = false;
     this.inflight = Promise.resolve(); // пакет последнего кадра, ещё не применённый OBS
     this.starting = null;              // идущий запуск эдита
-    this.ending = null;                // идущее завершение (возврат вебки на место)
+    this.endings = new Set();          // идущие завершения (возврат источников на место)
     this.lastLevelAt = 0;
 
     this.obs.on("ready", () => {
@@ -521,7 +538,7 @@ class EditController {
     this.obs.on("failed", (why) => this.log(`[EDIT] Can't connect to OBS: ${why}`));
     this.obs.on("disconnected", (why) => {
       this.log(`[EDIT] OBS disconnected: ${why}`);
-      if (this.session) this.endSession("OBS отключился", { restore: false });
+      for (const s of [...this.sessions.values()]) this.endSession(s, "OBS отключился", { restore: false });
     });
     this.obs.on("meters", (inputs) => this.onMeters(inputs));
   }
@@ -529,11 +546,7 @@ class EditController {
   applyConfig(cfg) {
     this.cfg = {
       enabled: cfg.editEnabled === true,
-      // источники видео, к которым применяется эдит (раньше был один — editCameraSource)
-      sources: editSourcesOf(cfg),
       audio: cfg.editAudioSource || "",
-      duration: clamp(Number(cfg.editDuration) || 30, 5, 600),
-      cooldown: clamp(Number(cfg.editCooldown) || 0, 0, 3600),
       intensity: clamp((Number(cfg.editIntensity) || 100) / 100, 0.1, 2.5),
       effects: (Array.isArray(cfg.editEffects) ? cfg.editEffects : EFFECT_KEYS).filter(k => EFFECTS[k]),
       latency: clamp(Number(cfg.editLatencyMs) || 0, 0, 500),
@@ -551,10 +564,11 @@ class EditController {
     return {
       enabled: Boolean(this.cfg && this.cfg.enabled),
       obs: this.obs.status(),
-      running: Boolean(this.session),
-      power: this.session ? Math.round(this.session.power * 100) / 100 : 1,
-      remaining: this.session ? Math.max(0, Math.ceil((this.session.endsAt - now) / 1000)) : 0,
-      cooldown: Math.max(0, Math.ceil((this.cooldownUntil - now) / 1000)),
+      running: this.sessions.size > 0,
+      sessions: [...this.sessions.values()].map(x => ({
+        key: x.key, title: x.title, sources: x.targets.map(t => t.source),
+        remaining: Math.max(0, Math.ceil((x.endsAt - now) / 1000)), power: Math.round(x.power * 100) / 100,
+      })),
       level: this.lastLevelAt && now - this.lastLevelAt < 1000 ? Math.round(this.tracker.level * 1000) / 1000 : null,
       bpm: pos ? Math.round(pos.bpm) : null,
       locked: pos ? pos.locked : false,
@@ -645,33 +659,43 @@ class EditController {
     ];
   }
 
-  // Старт по команде (проверяет паузу), из панели или за баллы (force — без паузы).
-  // stack — повтор во время эдита прибавляет время и усиливает эффекты на boost (0.25 = +25%)
-  async start({ by = "", duration, force = false, stack = false, boost = 0 } = {}) {
+  // Источник, занятый идущим эдитом: какой эдит им управляет
+  ownerOf(source) {
+    for (const s of this.sessions.values()) if (s.targets.some(t => t.source === source)) return s;
+    return null;
+  }
+
+  // Запуск эдита награды key на её источниках (force — без проверок паузы; stack — повтор продлевает и усиливает).
+  // Эдиты разных наград идут параллельно; источник, который уже крутит другая награда, остаётся у неё —
+  // покупка продлевает и усиливает тот эдит.
+  async start({ key = "test", title = "", sources = [], duration = 30, by = "", stack = false, boost = 0 } = {}) {
     // Запуски — по очереди: покупка, пришедшая, пока предыдущая ещё запускает эдит, его продлевает, а не запускает
     // второй параллельно (тот запомнил бы уже сдвинутую вебку как «исходную» и вернул бы её туда же).
-    // И новый эдит ждёт, пока прошлый вернёт источники на место.
+    // И новый эдит ждёт, пока прошлые вернут свои источники на место.
     while (this.starting) await this.starting.catch(() => {});
-    if (this.ending) await this.ending;
+    if (this.endings.size) await Promise.all([...this.endings]);
     if (!this.cfg || !this.cfg.enabled) throw new Error("Эдит выключен в настройках");
-    if (!this.cfg.sources.length) throw new Error("Не выбраны источники видео");
+    const wanted = [...new Set((sources || []).filter(Boolean))];
+    if (!wanted.length) throw new Error("У награды не выбраны источники видео");
     if (!this.obs.status().connected) throw new Error(this.obs.status().error || "Нет связи с OBS");
-    if (this.session) {
-      const s = this.session;
-      const add = (duration || this.cfg.duration) * 1000;
+    const add = clamp(Number(duration) || 30, 5, 600) * 1000;
+    const extend = (s) => {
       if (stack) {
         s.endsAt = Math.max(s.endsAt, Date.now()) + add;
         s.power = Math.min(MAX_POWER, s.power + boost);
-        this.log(`[EDIT] Extended${by ? ` by ${by}` : ""}: +${add / 1000}s, ${Math.ceil((s.endsAt - Date.now()) / 1000)}s left, power ×${s.power.toFixed(2)}`);
       } else {
-        s.endsAt = Math.max(s.endsAt, Date.now() + add); // повторная команда продлевает
+        s.endsAt = Math.max(s.endsAt, Date.now() + add);
       }
-      return { extended: true, power: s.power };
-    }
-    if (!force && Date.now() < this.cooldownUntil) {
-      throw new Error(`Эдит отдыхает ещё ${Math.ceil((this.cooldownUntil - Date.now()) / 1000)} с`);
-    }
-    this.starting = this.beginSession({ by, duration, force });
+      this.log(`[EDIT] "${s.title}" extended${by ? ` by ${by}` : ""}: ${Math.ceil((s.endsAt - Date.now()) / 1000)}s left, power ×${s.power.toFixed(2)}`);
+    };
+    const own = this.sessions.get(key);
+    if (own) { extend(own); return { extended: true, power: own.power }; }
+    // источники, которые уже крутит другая награда, — продлеваем её эдит
+    const owners = new Set(wanted.map(n => this.ownerOf(n)).filter(Boolean));
+    owners.forEach(extend);
+    const free = wanted.filter(n => !this.ownerOf(n));
+    if (!free.length) return { extended: true, power: Math.max(...[...owners].map(s => s.power)) };
+    this.starting = this.beginSession({ key, title: title || key, sources: free, duration: add / 1000, by });
     try {
       return await this.starting;
     } finally {
@@ -679,11 +703,11 @@ class EditController {
     }
   }
 
-  async beginSession({ by, duration, force }) {
+  async beginSession({ key, title, sources, duration, by }) {
     const filters = this.neededFilters();
     const targets = [];
     const missing = [];
-    for (const source of this.cfg.sources) {
+    for (const source of sources) {
       const item = await this.findSceneItem(source);
       if (!item) { missing.push(source); continue; }
       const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", item);
@@ -697,39 +721,45 @@ class EditController {
     if (!targets.length) {
       throw new Error(missing.length > 1 ? `Источников ${missing.map(n => `«${n}»`).join(", ")} нет в текущей сцене OBS` : `Источника «${missing[0]}» нет в текущей сцене OBS`);
     }
-    if (missing.length) this.log(`[EDIT] Not in the current scene, skipped: ${missing.join(", ")}`);
-    // если бот упадёт посреди эдита — при следующем подключении вернём как было
-    fs.writeFileSync(this.restoreFile, JSON.stringify({ targets: targets.map(t => ({ ...t.item, source: t.source, original: t.original })) }), "utf8");
+    if (missing.length) this.log(`[EDIT] "${title}": not in the current scene, skipped: ${missing.join(", ")}`);
     for (const t of targets) await this.ensureFilters(t.source, filters);
     await this.obs.batch(targets.flatMap(t => this.filterRequests(t.source, filters, true)));
 
-    this.session = {
-      targets, by,
+    const s = {
+      key, title, targets, by,
       startedAt: Date.now(),
-      endsAt: Date.now() + (duration || this.cfg.duration) * 1000,
-      beat: null, effect: "punch", dir: 1, seed: Math.random(), chatTriggered: !force, power: 1,
-      filters, beats: 0, frames: 0, skipped: 0,
+      endsAt: Date.now() + duration * 1000,
+      beat: null, effect: "punch", dir: 1, seed: Math.random(), power: 1,
+      beats: 0, frames: 0, skipped: 0,
     };
-    clearInterval(this.timer);
-    this.timer = setInterval(() => this.frame(), FRAME_MS);
-    this.log(`[EDIT] Started${by ? ` by ${by}` : ""} for ${Math.round((this.session.endsAt - Date.now()) / 1000)}s on ${targets.map(t => `"${t.source}"`).join(", ")}`);
+    this.sessions.set(key, s);
+    this.saveRestoreFile(); // если бот упадёт посреди эдита — при следующем подключении вернём как было
+    if (!this.timer) this.timer = setInterval(() => this.frame(), FRAME_MS);
+    this.log(`[EDIT] "${title}" started${by ? ` by ${by}` : ""} for ${Math.round(duration)}s on ${targets.map(t => `"${t.source}"`).join(", ")}`);
     return { started: true, sources: targets.map(t => t.source) };
   }
 
-  async stop(reason = "остановлен") {
+  // Файл аварийного возврата: все источники, которые сейчас крутят эдиты
+  saveRestoreFile() {
+    const targets = [...this.sessions.values()].flatMap(s => s.targets.map(t => ({ ...t.item, source: t.source, original: t.original })));
+    if (targets.length) fs.writeFileSync(this.restoreFile, JSON.stringify({ targets }), "utf8");
+    else removeFile(this.restoreFile);
+  }
+
+  // Остановить эдит одной награды (key) или все
+  async stop(reason = "остановлен", key = null) {
     if (this.starting) await this.starting.catch(() => {}); // «Стоп» во время запуска — останавливаем запущенное
-    if (!this.session) return { stopped: false };
-    await this.endSession(reason, { restore: true });
+    const list = [...this.sessions.values()].filter(s => !key || s.key === key);
+    if (!list.length) return { stopped: false };
+    await Promise.all(list.map(s => this.endSession(s, reason, { restore: true })));
     return { stopped: true };
   }
 
-  async endSession(reason, { restore }) {
-    const s = this.session;
-    if (!s) return;
-    this.session = null;
-    clearInterval(this.timer);
-    if (s.chatTriggered) this.cooldownUntil = Date.now() + this.cfg.cooldown * 1000;
-    this.ending = (async () => {
+  async endSession(s, reason, { restore }) {
+    if (this.sessions.get(s.key) !== s) return;
+    this.sessions.delete(s.key);
+    if (!this.sessions.size) { clearInterval(this.timer); this.timer = null; }
+    const ending = (async () => {
       if (restore) {
         try {
           // OBS выполняет запросы в пуле потоков: кадр, отправленный раньше, может примениться позже возврата
@@ -737,19 +767,20 @@ class EditController {
           await Promise.race([this.inflight, sleep(1500)]);
           await this.obs.batch(s.targets.flatMap(t => this.restoreRequests(t)));
           await this.verifyRestored(s.targets);
-          removeFile(this.restoreFile);
+          this.saveRestoreFile();
         } catch (err) {
           this.log(`[EDIT] Could not restore the sources now (${err.message}) — will retry on the next connection`);
         }
       }
       // OBS не успевал применять кадры — удары могли теряться, это видно по логу
       const slow = s.frames ? Math.round(s.skipped / s.frames * 100) : 0;
-      this.log(`[EDIT] Ended: ${reason} (${s.beats} beats${slow >= 10 ? `, ${slow}% of frames skipped: OBS was too slow to apply them` : ""})`);
+      this.log(`[EDIT] "${s.title}" ended: ${reason} (${s.beats} beats${slow >= 10 ? `, ${slow}% of frames skipped: OBS was too slow to apply them` : ""})`);
     })();
+    this.endings.add(ending);
     try {
-      await this.ending;
+      await ending;
     } finally {
-      this.ending = null;
+      this.endings.delete(ending);
     }
   }
 
@@ -777,11 +808,11 @@ class EditController {
   }
 
   async restoreAfterCrash() {
-    if (!fs.existsSync(this.restoreFile) || this.session) return;
+    if (!fs.existsSync(this.restoreFile) || this.sessions.size) return;
     const saved = JSON.parse(fs.readFileSync(this.restoreFile, "utf8"));
     // старый формат файла — один источник без имени
     const targets = Array.isArray(saved.targets) ? saved.targets
-      : [{ sceneName: saved.sceneName, sceneItemId: saved.sceneItemId, original: saved.original, source: this.cfg && this.cfg.sources[0] }];
+      : [{ sceneName: saved.sceneName, sceneItemId: saved.sceneItemId, original: saved.original }];
     const requests = [];
     for (const t of targets) {
       requests.push({ requestType: "SetSceneItemTransform", requestData: { sceneName: t.sceneName, sceneItemId: t.sceneItemId, sceneItemTransform: t.original } });
@@ -793,15 +824,8 @@ class EditController {
     this.log(`[EDIT] Restored ${targets.length} source(s) after an interrupted edit`);
   }
 
-  frame() {
-    const s = this.session;
-    if (!s) return;
-    const now = Date.now();
-    if (now >= s.endsAt) { this.endSession("время вышло", { restore: true }); return; }
-    s.frames++;
-    if (this.busy) { s.skipped++; return; } // OBS ещё не ответил на прошлый кадр — пропускаем, чтобы не копить очередь
-
-    const pos = this.tracker.position(now + this.cfg.latency);
+  // Эффект этого кадра для эдита s (у каждого эдита на бит свой случайный эффект)
+  lookFor(s, now, pos) {
     if (pos && pos.index !== s.beat) {
       s.beat = pos.index;
       s.beats++;
@@ -810,7 +834,6 @@ class EditController {
       s.dir = Math.random() < 0.5 ? -1 : 1;
       s.seed = Math.random();
     }
-
     // между битами (и в тишине) эффект затухает; поверх — лёгкий «дрейф», как в рендере
     const u = pos ? pos.u : 2;
     const base = u <= 1.15 ? EFFECTS[s.effect](Math.min(u, 1), s.dir, beatRandom(s.seed)) : { zoom: 1.04 };
@@ -825,31 +848,45 @@ class EditController {
     }
     base.ox = (base.ox || 0) + Math.sin(t * 2.4) * 0.004;
     base.oy = (base.oy || 0) + Math.cos(t * 1.7) * 0.003;
-    const look = scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * s.power));
+    return scaleLook(base, Math.min(MAX_LOOK, this.cfg.intensity * s.power));
+  }
 
-    // один и тот же эффект — на все источники сразу, одним пакетом
+  frame() {
+    if (!this.sessions.size) return;
+    const now = Date.now();
+    for (const s of [...this.sessions.values()]) {
+      if (now >= s.endsAt) this.endSession(s, "время вышло", { restore: true });
+    }
+    if (!this.sessions.size) return;
+    for (const s of this.sessions.values()) s.frames++;
+    if (this.busy) { for (const s of this.sessions.values()) s.skipped++; return; } // OBS ещё не ответил на прошлый кадр
+
+    const pos = this.tracker.position(now + this.cfg.latency);
     const requests = [];
-    const color = colorSettings(look);
-    const lutFile = look.lut && this.luts[look.lut];
-    const lutAmount = lutFile ? Math.round(look.lutAmount * 10) / 10 : 0;
-    const lutKey = lutAmount ? `${lutFile}|${lutAmount}` : "off";
-    const sharp = Math.round(look.sharp * 20) / 20;
-    for (const target of s.targets) {
-      const transform = buildTransform(target.T, look);
-      if (transform) requests.push({ requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: transform } });
-      if (!target.lastColor || Object.keys(color).some(k => Math.abs(color[k] - target.lastColor[k]) > 0.004)) {
-        target.lastColor = color;
-        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTER_NAME, filterSettings: color, overlay: true } });
-      }
-      // LUT: файл таблицы меняем только вместе с эффектом (OBS перечитывает его), силу — ступенями по 0.1
-      if (target.filters.includes("lut") && lutKey !== target.lastLutKey) {
-        target.lastLutKey = lutKey;
-        const settings = lutAmount ? { image_path: lutFile, clut_amount: lutAmount } : { clut_amount: 0 };
-        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.lut.name, filterSettings: settings, overlay: true } });
-      }
-      if (target.filters.includes("sharp") && sharp !== target.lastSharp) {
-        target.lastSharp = sharp;
-        requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.sharp.name, filterSettings: { sharpness: sharp }, overlay: true } });
+    for (const s of this.sessions.values()) {
+      const look = this.lookFor(s, now, pos);
+      const color = colorSettings(look);
+      const lutFile = look.lut && this.luts[look.lut];
+      const lutAmount = lutFile ? Math.round(look.lutAmount * 10) / 10 : 0;
+      const lutKey = lutAmount ? `${lutFile}|${lutAmount}` : "off";
+      const sharp = Math.round(look.sharp * 20) / 20;
+      for (const target of s.targets) {
+        const transform = buildTransform(target.T, look);
+        if (transform) requests.push({ requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: transform } });
+        if (!target.lastColor || Object.keys(color).some(k => Math.abs(color[k] - target.lastColor[k]) > 0.004)) {
+          target.lastColor = color;
+          requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTER_NAME, filterSettings: color, overlay: true } });
+        }
+        // LUT: файл таблицы меняем только вместе с эффектом (OBS перечитывает его), силу — ступенями по 0.1
+        if (target.filters.includes("lut") && lutKey !== target.lastLutKey) {
+          target.lastLutKey = lutKey;
+          const settings = lutAmount ? { image_path: lutFile, clut_amount: lutAmount } : { clut_amount: 0 };
+          requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.lut.name, filterSettings: settings, overlay: true } });
+        }
+        if (target.filters.includes("sharp") && sharp !== target.lastSharp) {
+          target.lastSharp = sharp;
+          requests.push({ requestType: "SetSourceFilterSettings", requestData: { sourceName: target.source, filterName: FILTERS.sharp.name, filterSettings: { sharpness: sharp }, overlay: true } });
+        }
       }
     }
     if (!requests.length) return;
@@ -857,13 +894,13 @@ class EditController {
     this.inflight = this.obs.batch(requests).catch(() => {}).finally(() => { this.busy = false; });
   }
 
-  // При выключении бота: вернуть камеру и дождаться ответа OBS (не дольше timeoutMs)
+  // При выключении бота: вернуть все источники и дождаться ответа OBS (не дольше timeoutMs)
   async shutdown(timeoutMs = 1500) {
-    if (this.session) {
-      await Promise.race([this.endSession("бот выключается", { restore: true }), new Promise(r => setTimeout(r, timeoutMs))]);
+    if (this.sessions.size) {
+      await Promise.race([this.stop("бот выключается"), new Promise(r => setTimeout(r, timeoutMs))]);
     }
     this.obs.disconnect();
   }
 }
 
-module.exports = { editSourcesOf, EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };
+module.exports = { migrateEditConfig, EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };

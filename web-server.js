@@ -59,12 +59,7 @@ const DEFAULT_CONFIG = {
   obsHost: "127.0.0.1",
   obsPort: 4455,
   obsPassword: "",
-  editSources: [],
   editAudioSource: "",
-  editCommand: "!edit",
-  editDuration: 30,
-  editCooldown: 120,
-  editWho: ["broadcaster", "moderator", "vip"],
   editIntensity: 100,
   editEffects: ["punch", "smash", "shake", "tilt", "zoomspin", "spin", "flip", "glitch", "flash", "strobe", "flicker", "hue", "tint", "mono", "crunch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"],
   editLatencyMs: 60,
@@ -74,11 +69,7 @@ const DEFAULT_CONFIG = {
   moduleEmotes: true,
   moduleGreetings: true,
   moduleGame: false,
-  editRewardEnabled: false,
-  editRewardTitle: "Эдит на вебке",
-  editRewardCost: 5000,
-  editRewardDuration: 30,
-  editRewardBoost: 25
+  editRewards: [],
 };
 
 let serverProcess = null;
@@ -104,12 +95,8 @@ function loadConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, "utf8");
-      const fromFile = JSON.parse(data);
-      // старый конфиг: один источник эдита (editCameraSource) → список editSources
-      if (!Array.isArray(fromFile.editSources) && typeof fromFile.editCameraSource === "string" && fromFile.editCameraSource) {
-        fromFile.editSources = [fromFile.editCameraSource];
-      }
-      delete fromFile.editCameraSource;
+      // старые настройки эдита (команда, источники, одна награда) → список наград
+      const fromFile = require("./edit").migrateEditConfig(JSON.parse(data));
       config = { ...DEFAULT_CONFIG, ...fromFile };
       console.log("[CONFIG] Loaded from file");
     }
@@ -154,6 +141,34 @@ function normalizeChannel(value) {
 }
 
 // Приведение конфигурации к ожидаемым типам (защита бота от некорректного ввода)
+// Награды за баллы для эдита: у каждой свой ключ (связь с наградой на Twitch), название (на канале оно должно
+// быть уникальным), цена, длительность, прибавка силы за повторную покупку и источники видео
+function sanitizeRewards(list) {
+  if (!Array.isArray(list)) return [];
+  const keys = new Set();
+  const titles = new Set();
+  const out = [];
+  for (const r of list.slice(0, 10)) {
+    if (!r || typeof r !== "object") continue;
+    let key = typeof r.key === "string" && /^[a-z0-9]{1,16}$/i.test(r.key) ? r.key : "";
+    for (let n = out.length + 1; !key || keys.has(key); n++) key = `r${n}`;
+    keys.add(key);
+    let title = (typeof r.title === "string" ? r.title.trim() : "").slice(0, 45) || "Эдит на вебке";
+    for (let n = 2; titles.has(title.toLowerCase()); n++) title = `${title.replace(/ \d+$/, "").slice(0, 40)} ${n}`;
+    titles.add(title.toLowerCase());
+    const int = (v, d, lo, hi) => { const x = Math.round(Number(v)); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
+    out.push({
+      key, title,
+      cost: int(r.cost, 5000, 1, 10000000),
+      duration: int(r.duration, 30, 5, 600),
+      boost: int(r.boost, 25, 0, 100),
+      sources: [...new Set((Array.isArray(r.sources) ? r.sources : []).filter(n => typeof n === "string" && n.trim()).map(n => n.slice(0, 200)))].slice(0, 20),
+      enabled: r.enabled !== false,
+    });
+  }
+  return out;
+}
+
 // Зоны без эмоутов: прямоугольник, эллипс или многоугольник (нарисованный от руки) в координатах оверлея 900×600
 function sanitizeZones(list) {
   if (!Array.isArray(list)) return [];
@@ -253,16 +268,7 @@ function sanitizeConfig(input) {
     obsHost: typeof src.obsHost === "string" && /^[\w.-]{1,100}$/.test(src.obsHost.trim()) ? src.obsHost.trim() : DEFAULT_CONFIG.obsHost,
     obsPort: clamp(num(src.obsPort, DEFAULT_CONFIG.obsPort, { min: 1, int: true }), 1, 65535),
     obsPassword: typeof src.obsPassword === "string" ? src.obsPassword.slice(0, 200) : "",
-    // источники видео для эдита; старый конфиг хранил один — editCameraSource
-    editSources: [...new Set((Array.isArray(src.editSources) ? src.editSources : typeof src.editCameraSource === "string" && src.editCameraSource ? [src.editCameraSource] : [])
-      .filter(n => typeof n === "string" && n.trim()).map(n => n.slice(0, 200)))].slice(0, 20),
     editAudioSource: typeof src.editAudioSource === "string" ? src.editAudioSource.slice(0, 200) : "",
-    editCommand: typeof src.editCommand === "string" && src.editCommand.trim() ? src.editCommand.trim().split(/\s+/)[0].slice(0, 40) : DEFAULT_CONFIG.editCommand,
-    editDuration: clamp(num(src.editDuration, DEFAULT_CONFIG.editDuration, { min: 5, int: true }), 5, 600),
-    editCooldown: clamp(num(src.editCooldown, DEFAULT_CONFIG.editCooldown, { int: true }), 0, 3600),
-    editWho: Array.isArray(src.editWho)
-      ? [...new Set(src.editWho.filter(w => ["broadcaster", "moderator", "vip", "subscriber", "everyone"].includes(w)))]
-      : DEFAULT_CONFIG.editWho.slice(),
     editIntensity: clamp(num(src.editIntensity, DEFAULT_CONFIG.editIntensity, { int: true }), 10, 250),
     editEffects: Array.isArray(src.editEffects)
       ? [...new Set(src.editEffects.filter(e => EDIT_EFFECTS.includes(e)))]
@@ -271,12 +277,7 @@ function sanitizeConfig(input) {
     editAlwaysPunch: src.editAlwaysPunch !== false,
     editBoxPulse: src.editBoxPulse !== false,
     editBoxPulseAmount: clamp(num(src.editBoxPulseAmount, DEFAULT_CONFIG.editBoxPulseAmount, { int: true }), 0, 60),
-    editRewardEnabled: src.editRewardEnabled === true,
-    editRewardTitle: typeof src.editRewardTitle === "string" && src.editRewardTitle.trim()
-      ? src.editRewardTitle.trim().slice(0, 45) : DEFAULT_CONFIG.editRewardTitle,
-    editRewardCost: clamp(num(src.editRewardCost, DEFAULT_CONFIG.editRewardCost, { min: 1, int: true }), 1, 10000000),
-    editRewardDuration: clamp(num(src.editRewardDuration, DEFAULT_CONFIG.editRewardDuration, { min: 5, int: true }), 5, 600),
-    editRewardBoost: clamp(num(src.editRewardBoost, DEFAULT_CONFIG.editRewardBoost, { int: true }), 0, 100),
+    editRewards: sanitizeRewards(src.editRewards),
     moduleEmotes: src.moduleEmotes !== false,
     moduleGreetings: src.moduleGreetings !== false,
     moduleGame: src.moduleGame === true

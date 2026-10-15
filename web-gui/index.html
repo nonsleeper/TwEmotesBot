@@ -384,6 +384,12 @@
     .edit-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, .04); }
     .edit-row > span:first-child { color: var(--muted); width: 64px; flex: none; }
     .edit-row b { font-weight: 600; }
+    .reward-item { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255, 255, 255, .02); }
+    .reward-item.off { opacity: .7; }
+    .reward-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .reward-head .grow { flex: 1; }
+    .reward-sources { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+    .reward-sources .missing { color: var(--warn); }
     .reward-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 12px; }
     .reward-code { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: rgba(145, 71, 255, .12); }
     .reward-code[hidden] { display: none; }
@@ -882,7 +888,7 @@
         <div class="split-main">
           <div class="card">
             <h2>Эдит на вебке</h2>
-            <p class="desc" style="margin:0">По команде в чате вебка на время превращается в эдит: под бит музыки бот дёргает источник камеры в OBS — зум-удары, тряска, наклон, вспышки, цвет. Работает через встроенный в OBS сервер WebSocket, плагины не нужны. После эдита вебка возвращается как была. Выключается в «Подключение → Модули».</p>
+            <p class="desc" style="margin:0">Зритель покупает награду за баллы канала — и выбранные источники OBS (вебка, игра, что угодно) на время превращаются в эдит: под бит музыки зум-удары, тряска, наклон, вспышки, цвет. У каждой награды свои источники, разные награды идут одновременно. Работает через встроенный в OBS сервер WebSocket, плагины не нужны. После эдита всё возвращается как было. Выключается в «Подключение → Модули».</p>
           </div>
 
           <div class="card">
@@ -909,17 +915,10 @@
 
           <div class="card">
             <h2>Источники</h2>
-            <div class="grid-2">
-              <div class="field">
-                <label>Видео для эффектов</label>
-                <div class="source-list" id="editSourceList"><span style="color:var(--dim)">Нажмите «Обновить список из OBS»</span></div>
-                <div class="hint">Эффекты идут на все отмеченные источники сразу. Они должны быть в сцене, которая идёт в эфир.</div>
-              </div>
-              <div class="field">
-                <label for="editAudio">Звук для битов</label>
-                <select class="input" id="editAudio" data-key="editAudioSource"></select>
-                <div class="hint">Где играет музыка: «Звук рабочего стола», плеер, браузер…</div>
-              </div>
+            <div class="field" style="max-width:420px">
+              <label for="editAudio">Звук для битов</label>
+              <select class="input" id="editAudio" data-key="editAudioSource"></select>
+              <div class="hint">Где играет музыка: «Звук рабочего стола», плеер, браузер… Видеоисточники для эффектов выбираются у каждой награды.</div>
             </div>
             <div class="sentence" style="margin-top:10px">
               <button class="btn btn-sm" id="btnEditSources" type="button">↻ Обновить список из OBS</button>
@@ -928,50 +927,24 @@
           </div>
 
           <div class="card">
-            <h2>Запуск</h2>
-            <div class="sentence" style="margin-bottom:8px; gap:8px 14px">
-              Команда <input class="input" id="editCommand" data-key="editCommand" style="width:120px" spellcheck="false">
-              на <input class="num" id="editDuration" data-key="editDuration" type="number" min="5" max="600"> сек.,
-              повтор не раньше чем через <input class="num" id="editCooldown" data-key="editCooldown" type="number" min="0" max="3600"> сек.
-            </div>
-            <div class="sentence" style="gap:8px 16px">
-              Могут запускать:
-              <label class="check"><input type="checkbox" data-list="editWho" value="broadcaster"> стример</label>
-              <label class="check"><input type="checkbox" data-list="editWho" value="moderator"> модеры</label>
-              <label class="check"><input type="checkbox" data-list="editWho" value="vip"> VIP</label>
-              <label class="check"><input type="checkbox" data-list="editWho" value="subscriber"> сабы</label>
-              <label class="check"><input type="checkbox" data-list="editWho" value="everyone"> все</label>
-            </div>
-            <p class="desc" style="margin:8px 0 0">Повтор команды во время эдита продлевает его. <code>!edit stop</code> — остановить.</p>
-          </div>
-
-          <div class="card">
-            <h2>Награда за баллы канала</h2>
-            <p class="desc">Бот сам создаёт награду на канале и запускает эдит, когда её покупают; покупка во время эдита продлевает его и усиливает эффекты. Если эдит не может запуститься (OBS не подключён), баллы возвращаются, пока бот выключен — награда скрыта. Баллы канала есть только у компаньонов и партнёров.</p>
+            <h2>Награды за баллы канала</h2>
+            <p class="desc">Бот сам создаёт награды на канале. Покупка запускает эдит на источниках этой награды, повторная покупка во время эдита — продлевает и усиливает его. Если источник уже крутит другая награда, покупка продлевает тот эдит. Не получилось запустить (OBS не подключён, источника нет в сцене) — баллы возвращаются; пока бот выключен, награды скрыты. Баллы канала есть только у компаньонов и партнёров.</p>
             <div class="reward-login">
               <span>Twitch: <b id="rewardAccount">—</b></span>
               <button class="btn btn-sm" id="btnRewardLogin" type="button">Войти через Twitch</button>
               <button class="btn btn-sm" id="btnRewardLogout" type="button" hidden>Выйти</button>
+              <span id="rewardGlobalError" style="color:var(--err)"></span>
             </div>
             <div class="reward-code" id="rewardCode" hidden>
               Откройте <a id="rewardUri" href="https://www.twitch.tv/activate" target="_blank" rel="noopener">twitch.tv/activate</a>
               под аккаунтом канала и введите код <b id="rewardCodeText"></b>
               <button class="btn btn-sm btn-ghost" id="btnRewardCancel" type="button">Отмена</button>
             </div>
-            <label class="check">
-              <input type="checkbox" id="editRewardEnabled" data-key="editRewardEnabled">
-              <span>Включить награду</span>
-            </label>
-            <div class="sentence" style="margin:10px 0 8px; gap:8px 14px">
-              Название <input class="input" id="editRewardTitle" data-key="editRewardTitle" maxlength="45" style="width:220px" spellcheck="false">
-              цена <input class="num" id="editRewardCost" data-key="editRewardCost" type="number" min="1" max="10000000" style="width:100px"> баллов
+            <div id="rewardList"></div>
+            <div class="sentence" style="margin-top:12px">
+              <button class="btn btn-sm" id="btnRewardAdd" type="button">+ Добавить награду</button>
+              <span style="color:var(--dim)">Источники — из списка OBS («↻ Обновить список из OBS» выше).</span>
             </div>
-            <div class="sentence" style="gap:8px 14px">
-              Эдит на <input class="num" id="editRewardDuration" data-key="editRewardDuration" type="number" min="5" max="600"> сек.,
-              каждая покупка во время эдита — ещё столько же и сила +<input class="num" id="editRewardBoost" data-key="editRewardBoost" type="number" min="0" max="100"> %
-              <span style="color:var(--dim)">(до ×2.5)</span>
-            </div>
-            <div class="edit-row" style="margin-top:8px"><span>Награда</span><b id="rewardStatus">—</b></div>
           </div>
 
           <div class="card">
@@ -1040,10 +1013,9 @@
             </div>
             <div class="edit-row"><span>Эдит</span><b id="editRun">—</b></div>
             <div class="sentence" style="margin-top:12px">
-              <button class="btn btn-primary" id="btnEditTest" type="button">▶ Тест: эдит 15 с</button>
-              <button class="btn" id="btnEditStop" type="button">■ Стоп</button>
+              <button class="btn" id="btnEditStop" type="button">■ Стоп всё</button>
             </div>
-            <p class="desc" style="margin:8px 0 0">Тест запускается сразу, без паузы и проверки прав. Сначала сохраните настройки.</p>
+            <p class="desc" style="margin:8px 0 0">Тест — кнопкой «▶ Тест» у награды (без баллов). «Стоп всё» останавливает все идущие эдиты.</p>
           </div>
         </aside>
       </div>

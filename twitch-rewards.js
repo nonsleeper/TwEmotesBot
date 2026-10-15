@@ -64,16 +64,16 @@ class RewardManager extends EventEmitter {
     this.file = file;
     this.log = log;
     this.isAvailable = isAvailable; // может ли эдит запуститься прямо сейчас
-    this.auth = this.loadAuth(); // { clientId, accessToken, refreshToken, expiresAt, userId, login, rewardId }
+    this.auth = this.loadAuth(); // { clientId, accessToken, refreshToken, expiresAt, userId, login, rewardIds: { key: id } }
     this.cfg = null;
     this.login = null; // идущий вход: { userCode, uri, expiresAt, deviceCode, interval }
     this.error = null;
-    this.reward = null; // награда, как она сейчас на Twitch
+    this.rewards = new Map();      // key → награда, как она сейчас на Twitch
+    this.rewardErrors = new Map(); // key → ошибка этой награды (например, такое название уже занято)
     this.paused = null;
     this.pendingPause = 0;
     this.ws = null;
     this.sessionId = null;
-    this.wsRewardId = null;
     this.wsFailures = 0;
     this.seen = []; // id сообщений EventSub: Twitch может прислать одно и то же дважды
     this.inFlight = new Set(); // активации, которые сейчас обрабатываются
@@ -102,7 +102,8 @@ class RewardManager extends EventEmitter {
   dropAuth(reason) {
     this.auth = null;
     removeFile(this.file);
-    this.reward = null;
+    this.rewards.clear();
+    this.rewardErrors.clear();
     this.paused = null;
     this.closeSocket();
     this.error = reason || null;
@@ -161,15 +162,24 @@ class RewardManager extends EventEmitter {
 
   // ---- настройки
   applyConfig(cfg) {
-    const title = String(cfg.editRewardTitle || "").trim();
+    const list = Array.isArray(cfg.editRewards) ? cfg.editRewards : [];
     this.cfg = {
       clientId: cfg.twitchClientId || "",
       clientSecret: cfg.twitchClientSecret || "",
       channel: String(cfg.channel || "").trim().toLowerCase(),
-      enabled: cfg.editEnabled === true && cfg.editRewardEnabled === true,
-      title: title.slice(0, 45) || "Эдит на вебке",
-      cost: Math.max(1, Math.round(Number(cfg.editRewardCost) || 5000)),
+      rewards: list.filter(r => r && r.key).map(r => ({
+        key: String(r.key),
+        title: String(r.title || "").trim().slice(0, 45) || "Эдит на вебке",
+        cost: Math.max(1, Math.round(Number(r.cost) || 5000)),
+        enabled: cfg.editEnabled === true && r.enabled !== false,
+      })),
     };
+    // прежняя версия хранила одну награду (rewardId) — она становится первой в списке
+    if (this.auth && !this.auth.rewardIds) {
+      this.auth.rewardIds = this.auth.rewardId && this.cfg.rewards[0] ? { [this.cfg.rewards[0].key]: this.auth.rewardId } : {};
+      delete this.auth.rewardId;
+      this.saveAuth();
+    }
     if (this.auth && this.auth.clientId !== this.cfg.clientId) {
       this.dropAuth("Client ID изменился — войдите в Twitch заново");
     } else if (this.auth && this.cfg.channel && this.auth.login.toLowerCase() !== this.cfg.channel) {
@@ -232,7 +242,7 @@ class RewardManager extends EventEmitter {
         }
         this.auth = {
           clientId, accessToken: t.access_token, refreshToken: t.refresh_token,
-          expiresAt: Date.now() + (t.expires_in || 3600) * 1000, userId: v.user_id, login: v.login, rewardId: null,
+          expiresAt: Date.now() + (t.expires_in || 3600) * 1000, userId: v.user_id, login: v.login, rewardIds: {},
         };
         this.saveAuth();
         this.error = null;
@@ -257,36 +267,33 @@ class RewardManager extends EventEmitter {
     this.cancelLogin();
     if (!this.auth) return;
     const a = this.auth;
-    if (a.rewardId) await this.updateReward({ is_enabled: false }, { timeout: 5000 }).catch(() => {}); // награда остаётся, но скрыта
+    await this.hideAll(5000); // награды остаются на канале, но скрыты
     this.revoke(a.clientId, a.accessToken);
     this.dropAuth(null);
-    this.log("[REWARD] Signed out of Twitch, reward hidden");
+    this.log("[REWARD] Signed out of Twitch, rewards hidden");
   }
 
-  // ---- награда на Twitch
+  // ---- награды на Twitch (сколько угодно: у каждой свой ключ key в настройках и свой id на Twitch)
   rewardsPath(query = "") {
     return `/channel_points/custom_rewards?broadcaster_id=${this.auth.userId}${query}`;
   }
 
-  async updateReward(patch, options) {
-    const data = await this.helix("PATCH", this.rewardsPath(`&id=${this.auth.rewardId}`), patch, options);
-    this.reward = data.data[0];
-    return this.reward;
+  rewardIdOf(key) {
+    return this.auth && this.auth.rewardIds ? this.auth.rewardIds[key] || null : null;
   }
 
-  async ensureReward() {
-    const want = { title: this.cfg.title, cost: this.cfg.cost };
-    let reward = null;
-    if (this.auth.rewardId) {
-      const data = await this.helix("GET", this.rewardsPath(`&id=${this.auth.rewardId}&only_manageable_rewards=true`))
-        .catch(err => { if (err.status === 404) return null; throw err; });
-      reward = (data && data.data[0]) || null;
-    }
-    if (!reward) {
-      // награда могла остаться от прошлого входа — ищем свою по названию
-      const data = await this.helix("GET", this.rewardsPath("&only_manageable_rewards=true"));
-      reward = data.data.find(r => r.title === want.title) || null;
-    }
+  async updateReward(key, patch, options) {
+    const data = await this.helix("PATCH", this.rewardsPath(`&id=${this.rewardIdOf(key)}`), patch, options);
+    this.rewards.set(key, data.data[0]);
+    return data.data[0];
+  }
+
+  async ensureReward(r, manageable) {
+    const want = { title: r.title, cost: r.cost };
+    let reward = manageable.find(x => x.id === this.rewardIdOf(r.key)) || null;
+    // награда могла остаться от прошлого входа — ищем свою по названию (но не занятую другой наградой из списка)
+    const taken = new Set(Object.entries(this.auth.rewardIds).filter(([k]) => k !== r.key).map(([, id]) => id));
+    if (!reward) reward = manageable.find(x => x.title === want.title && !taken.has(x.id)) || null;
     if (!reward) {
       try {
         const data = await this.helix("POST", this.rewardsPath(), {
@@ -301,31 +308,34 @@ class RewardManager extends EventEmitter {
         throw err;
       }
     }
-    if (this.auth.rewardId !== reward.id) {
-      this.auth.rewardId = reward.id;
+    if (this.auth.rewardIds[r.key] !== reward.id) {
+      this.auth.rewardIds[r.key] = reward.id;
       this.saveAuth();
     }
+    this.rewards.set(r.key, reward);
     const patch = {};
     if (reward.title !== want.title) patch.title = want.title;
     if (reward.cost !== want.cost) patch.cost = want.cost;
     if (!reward.is_enabled) patch.is_enabled = true;
     if (reward.should_redemptions_skip_request_queue) patch.should_redemptions_skip_request_queue = false; // иначе баллы не вернуть
-    this.reward = reward;
     if (Object.keys(patch).length) {
-      await this.updateReward(patch);
-      if (patch.title || patch.cost) this.log(`[REWARD] Reward updated: "${this.reward.title}", ${this.reward.cost} points`);
+      const updated = await this.updateReward(r.key, patch);
+      if (patch.title || patch.cost) this.log(`[REWARD] Reward updated: "${updated.title}", ${updated.cost} points`);
     }
-    return this.reward;
+    return this.rewards.get(r.key);
   }
 
   // Активации, сделанные пока бот не слушал (был выключен, упал, рвалась связь), — вернуть баллы
   async refundMissed(before) {
-    const rid = this.auth.rewardId;
-    const data = await this.helix("GET", `/channel_points/custom_rewards/redemptions?broadcaster_id=${this.auth.userId}&reward_id=${rid}&status=UNFULFILLED&first=50`);
-    const ids = data.data.filter(r => !this.inFlight.has(r.id) && Date.parse(r.redeemed_at) < before).map(r => r.id);
-    if (!ids.length) return;
-    await this.helix("PATCH", `/channel_points/custom_rewards/redemptions?broadcaster_id=${this.auth.userId}&reward_id=${rid}&${ids.map(id => `id=${id}`).join("&")}`, { status: "CANCELED" });
-    this.log(`[REWARD] Refunded ${ids.length} redemption(s) made while the bot was not listening`);
+    for (const r of this.cfg.rewards.filter(x => x.enabled)) {
+      const rid = this.rewardIdOf(r.key);
+      if (!rid) continue;
+      const data = await this.helix("GET", `/channel_points/custom_rewards/redemptions?broadcaster_id=${this.auth.userId}&reward_id=${rid}&status=UNFULFILLED&first=50`);
+      const ids = data.data.filter(x => !this.inFlight.has(x.id) && Date.parse(x.redeemed_at) < before).map(x => x.id);
+      if (!ids.length) continue;
+      await this.helix("PATCH", `/channel_points/custom_rewards/redemptions?broadcaster_id=${this.auth.userId}&reward_id=${rid}&${ids.map(id => `id=${id}`).join("&")}`, { status: "CANCELED" });
+      this.log(`[REWARD] "${r.title}": refunded ${ids.length} redemption(s) made while the bot was not listening`);
+    }
   }
 
   // Эдит пошёл — засчитать, нет — вернуть баллы
@@ -340,7 +350,7 @@ class RewardManager extends EventEmitter {
     }
   }
 
-  // ---- синхронизация: привести награду и подписку к настройкам
+  // ---- синхронизация: привести награды и подписку к настройкам
   scheduleSync() {
     if (this.stopped) return Promise.resolve();
     if (this.syncing) { this.syncAgain = true; return this.syncing; }
@@ -364,33 +374,63 @@ class RewardManager extends EventEmitter {
 
   async sync() {
     if (!this.auth || !this.cfg) { this.closeSocket(); return; }
-    if (!this.cfg.enabled) {
-      this.closeSocket();
-      if (this.auth.rewardId && (!this.reward || this.reward.is_enabled)) {
-        await this.updateReward({ is_enabled: false }).catch(err => { if (err.status !== 404) throw err; });
-        this.log("[REWARD] Reward hidden (turned off in settings)");
+    if (!this.auth.rewardIds) this.auth.rewardIds = {};
+    const { data: manageable } = await this.helix("GET", this.rewardsPath("&only_manageable_rewards=true"));
+    for (const x of manageable) {
+      const key = Object.keys(this.auth.rewardIds).find(k => this.auth.rewardIds[k] === x.id);
+      if (key) this.rewards.set(key, x);
+    }
+    // награды, которые убрали из списка, — прячем (не удаляем: с тем же названием бот подхватит её снова)
+    for (const [key, id] of Object.entries(this.auth.rewardIds)) {
+      if (this.cfg.rewards.some(r => r.key === key)) continue;
+      const known = manageable.find(x => x.id === id);
+      if (known && known.is_enabled) {
+        await this.helix("PATCH", this.rewardsPath(`&id=${id}`), { is_enabled: false }).catch(err => { if (err.status !== 404) throw err; });
+        this.log(`[REWARD] "${known.title}" hidden (removed from the list)`);
       }
-      this.paused = null;
-      return;
+      delete this.auth.rewardIds[key];
+      this.rewards.delete(key);
+      this.saveAuth();
     }
-    const reward = await this.ensureReward();
     const paused = !this.isAvailable();
-    if (reward.is_paused !== paused) {
-      await this.updateReward({ is_paused: paused });
-      this.log(paused ? "[REWARD] Reward paused: the edit can't start now (OBS not connected?)" : "[REWARD] Reward is active");
+    let active = 0;
+    for (const r of this.cfg.rewards) {
+      try {
+        if (!r.enabled) {
+          const known = this.rewards.get(r.key);
+          if (known && known.is_enabled) {
+            await this.updateReward(r.key, { is_enabled: false });
+            this.log(`[REWARD] "${r.title}" hidden (turned off in settings)`);
+          }
+          this.rewardErrors.delete(r.key);
+          continue;
+        }
+        const reward = await this.ensureReward(r, manageable);
+        if (reward.is_paused !== paused) {
+          await this.updateReward(r.key, { is_paused: paused });
+          this.log(paused ? `[REWARD] "${r.title}" paused: the edit can't start now (OBS not connected?)` : `[REWARD] "${r.title}" is active`);
+        }
+        this.rewardErrors.delete(r.key);
+        active++;
+      } catch (err) {
+        const msg = describe(err);
+        if (this.rewardErrors.get(r.key) !== msg) this.log(`[REWARD] "${r.title}": ${msg}`);
+        this.rewardErrors.set(r.key, msg);
+      }
     }
-    this.paused = paused;
+    this.paused = active ? paused : null;
     this.pendingPause = 0;
-    if (!this.ws || this.wsRewardId !== reward.id) this.openSocket(EVENTSUB_URL);
+    if (!active) { this.closeSocket(); return; }
+    if (!this.ws) this.openSocket(EVENTSUB_URL);
   }
 
   check() {
-    if (this.stopped || !this.auth || !this.cfg || !this.cfg.enabled) return;
-    if (this.error && Date.now() - this.lastSyncAt > RETRY_SYNC_MS) { this.scheduleSync(); return; }
+    if (this.stopped || !this.auth || !this.cfg || !this.cfg.rewards.some(r => r.enabled)) return;
+    if ((this.error || this.rewardErrors.size) && Date.now() - this.lastSyncAt > RETRY_SYNC_MS) { this.scheduleSync(); return; }
     if (this.paused === null) return;
     const paused = !this.isAvailable();
     if (paused === this.paused) { this.pendingPause = 0; return; }
-    if (paused && ++this.pendingPause < 2) return; // короткий обрыв связи с OBS — награду не дёргаем
+    if (paused && ++this.pendingPause < 2) return; // короткий обрыв связи с OBS — награды не дёргаем
     this.scheduleSync();
   }
 
@@ -399,7 +439,6 @@ class RewardManager extends EventEmitter {
     if (!reconnectFrom) this.closeSocket();
     const ws = new WebSocket(url);
     this.ws = ws;
-    this.wsRewardId = this.auth.rewardId;
     let keepaliveMs = 30000;
     const watchdog = () => {
       clearTimeout(ws.watchdog);
@@ -432,10 +471,10 @@ class RewardManager extends EventEmitter {
           const subscribedAt = Date.now();
           await this.helix("POST", "/eventsub/subscriptions", {
             type: REDEMPTION_EVENT, version: "1",
-            condition: { broadcaster_user_id: this.auth.userId, reward_id: this.wsRewardId },
+            condition: { broadcaster_user_id: this.auth.userId }, // все награды канала: чужие пропускаем ниже
             transport: { method: "websocket", session_id: session.id },
           }).catch(err => { if (err.status !== 409) throw err; });
-          this.log(`[REWARD] Listening for "${this.cfg.title}" redemptions`);
+          this.log(`[REWARD] Listening for redemptions: ${this.cfg.rewards.filter(r => r.enabled).map(r => `"${r.title}"`).join(", ")}`);
           await this.refundMissed(subscribedAt);
         } catch (err) {
           this.error = `Не удалось подписаться на награды: ${describe(err)}`;
@@ -446,9 +485,12 @@ class RewardManager extends EventEmitter {
         this.openSocket(msg.payload.session.reconnect_url, { reconnectFrom: ws });
       } else if (type === "notification" && meta.subscription_type === REDEMPTION_EVENT) {
         const e = msg.payload.event;
-        if (!this.auth || e.reward.id !== this.auth.rewardId) return;
+        if (!this.auth || !this.auth.rewardIds) return;
+        const key = Object.keys(this.auth.rewardIds).find(k => this.auth.rewardIds[k] === e.reward.id);
+        const r = key && this.cfg.rewards.find(x => x.key === key && x.enabled);
+        if (!r) return; // чужая награда стримера — не наша забота, не трогаем
         this.inFlight.add(e.id);
-        this.emit("redemption", { id: e.id, rewardId: e.reward.id, user: e.user_name || e.user_login });
+        this.emit("redemption", { id: e.id, rewardId: e.reward.id, key, title: r.title, user: e.user_name || e.user_login });
       } else if (type === "revocation") {
         const status = msg.payload.subscription && msg.payload.subscription.status;
         if (status === "authorization_revoked" || status === "user_removed") {
@@ -491,8 +533,13 @@ class RewardManager extends EventEmitter {
       signedIn: Boolean(this.auth),
       login: this.auth ? this.auth.login : null,
       pending: this.login ? { code: this.login.userCode, uri: this.login.uri, expiresIn: Math.max(0, Math.round((this.login.expiresAt - now) / 1000)) } : null,
-      enabled: Boolean(this.cfg && this.cfg.enabled),
-      reward: this.auth && this.reward ? { title: this.reward.title, cost: this.reward.cost, enabled: this.reward.is_enabled, paused: this.reward.is_paused } : null,
+      rewards: (this.cfg ? this.cfg.rewards : []).map(r => {
+        const tw = this.auth ? this.rewards.get(r.key) : null;
+        return {
+          key: r.key, title: r.title, enabled: r.enabled, error: this.rewardErrors.get(r.key) || null,
+          twitch: tw ? { title: tw.title, cost: tw.cost, enabled: tw.is_enabled, paused: tw.is_paused } : null,
+        };
+      }),
       listening: Boolean(this.sessionId),
       error: this.error,
     };
@@ -504,11 +551,15 @@ class RewardManager extends EventEmitter {
     clearInterval(this.timer);
     this.cancelLogin();
     this.closeSocket();
-    if (this.auth && this.auth.rewardId && this.reward && this.reward.is_enabled) {
-      await this.updateReward({ is_enabled: false }, { timeout: 3000 })
-        .then(() => this.log("[REWARD] Reward hidden while the bot is off"))
-        .catch(() => {});
-    }
+    if (await this.hideAll(3000)) this.log("[REWARD] Rewards hidden while the bot is off");
+  }
+
+  // Спрятать все наши видимые награды (бот выключается / выход из Twitch). Возвращает, было ли что прятать
+  async hideAll(timeout) {
+    if (!this.auth || !this.auth.rewardIds) return false;
+    const visible = [...this.rewards.entries()].filter(([key, r]) => r.is_enabled && this.auth.rewardIds[key]);
+    await Promise.all(visible.map(([key]) => this.updateReward(key, { is_enabled: false }, { timeout }).catch(() => {})));
+    return visible.length > 0;
   }
 }
 

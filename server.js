@@ -61,12 +61,7 @@ let config = {
   obsHost: "127.0.0.1",
   obsPort: 4455,
   obsPassword: "",
-  editSources: [],
   editAudioSource: "",
-  editCommand: "!edit",
-  editDuration: 30,
-  editCooldown: 120,
-  editWho: ["broadcaster", "moderator", "vip"],
   editIntensity: 100,
   editEffects: ["punch", "smash", "shake", "tilt", "zoomspin", "spin", "flip", "glitch", "flash", "strobe", "flicker", "hue", "tint", "mono", "crunch", "invert", "xerox", "poster", "sepia", "duotone", "thermal", "nightvision"],
   editLatencyMs: 60,
@@ -76,11 +71,8 @@ let config = {
   moduleEmotes: true,
   moduleGreetings: true,
   moduleGame: false,
-  editRewardEnabled: false,
-  editRewardTitle: "Эдит на вебке",
-  editRewardCost: 5000,
-  editRewardDuration: 30,
-  editRewardBoost: 25
+  // награды за баллы канала, запускающие эдит: { key, title, cost, duration, boost, sources, enabled }
+  editRewards: [],
 };
 
 // Загрузка из bot-config.json если существует
@@ -134,6 +126,9 @@ if (process.env.CONFIG) {
     console.error("[CONFIG] Failed to parse:", err);
   }
 }
+// старые настройки эдита (команда, один источник, одна награда) → список наград
+if (!(Array.isArray(config.editRewards) && config.editRewards.length)) delete config.editRewards;
+require("./edit").migrateEditConfig(config);
 
 // Валидация обязательных полей
 if (!config.twitchClientId || !config.twitchClientSecret) {
@@ -327,17 +322,21 @@ app.get("/api/edit/sources", async (req, res) => {
   }
 });
 
+// Тест из панели: эдит награды key на её источниках (как покупка, только без баллов)
 app.post("/api/edit/start", async (req, res) => {
   try {
-    const duration = Number(req.body?.duration) || undefined;
-    res.json({ success: true, ...(await edit.start({ by: "панель", duration, force: true })) });
+    const reward = rewardConfig(req.body && req.body.key);
+    if (!reward) throw new Error("Такой награды нет в сохранённых настройках — сохраните их");
+    const duration = Number(req.body.duration) || 15;
+    res.json({ success: true, ...(await edit.start({ key: reward.key, title: reward.title, sources: reward.sources, duration, by: "панель (тест)" })) });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
 });
 
+// «Стоп» из панели: одну награду (key) или все эдиты
 app.post("/api/edit/stop", async (req, res) => {
-  res.json({ success: true, ...(await edit.stop("остановлен из панели")) });
+  res.json({ success: true, ...(await edit.stop("остановлен из панели", (req.body && req.body.key) || null)) });
 });
 
 // Новые настройки эдита без перезапуска бота (присылает web-server.js при сохранении)
@@ -413,33 +412,29 @@ const rewards = new RewardManager({
   log: (msg) => console.log(msg),
   isAvailable: () => {
     const s = edit.state();
-    return s.enabled && s.obs.connected && edit.cfg.sources.length > 0;
+    return s.enabled && s.obs.connected;
   },
 });
 rewards.applyConfig(config);
+function rewardConfig(key) {
+  return (Array.isArray(config.editRewards) ? config.editRewards : []).find(r => r && r.key === key) || null;
+}
 rewards.on("redemption", async (r) => {
-  const duration = Math.min(600, Math.max(5, Number(config.editRewardDuration) || 30));
-  const boost = Math.min(100, Math.max(0, Number(config.editRewardBoost ?? 25))) / 100;
+  const reward = rewardConfig(r.key);
   try {
-    const result = await edit.start({ by: `${r.user} (за баллы)`, duration, force: true, stack: true, boost });
-    if (result.started) console.log(`[REWARD] ${r.user} redeemed the edit`);
+    if (!reward) throw new Error("награды нет в настройках");
+    const boost = Math.min(100, Math.max(0, Number(reward.boost ?? 25))) / 100;
+    const result = await edit.start({
+      key: reward.key, title: reward.title, sources: reward.sources, duration: reward.duration,
+      by: `${r.user} (за баллы)`, stack: true, boost,
+    });
+    if (result.started) console.log(`[REWARD] ${r.user} redeemed "${reward.title}"`);
     await rewards.resolve(r, true);
   } catch (err) {
-    console.log(`[REWARD] ${r.user}: ${err.message} — points refunded`);
+    console.log(`[REWARD] ${r.user}, "${r.title}": ${err.message} — points refunded`);
     await rewards.resolve(r, false);
   }
 });
-
-// Кто может запускать эдит командой: editWho = ["broadcaster", "moderator", "vip", "subscriber", "everyone"]
-function canTriggerEdit(tags) {
-  const who = new Set(Array.isArray(config.editWho) ? config.editWho : []);
-  const badges = tags.badges || {};
-  return who.has("everyone") ||
-    (who.has("broadcaster") && Boolean(badges.broadcaster)) ||
-    (who.has("moderator") && (tags.mod === true || Boolean(badges.moderator) || Boolean(badges.broadcaster))) ||
-    (who.has("vip") && (Boolean(badges.vip) || tags.vip === true)) ||
-    (who.has("subscriber") && (tags.subscriber === true || Boolean(badges.subscriber) || Boolean(badges.founder)));
-}
 
 server.on('upgrade', (request, socket, head) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
@@ -1981,19 +1976,6 @@ client.on("message", async (channel, tags, message, self) => {
     const username = tags["display-name"] || tags.username || "unknown";
     console.log(`[CHAT] ${username}: ${message}`);
 
-    // команда эдита: "!edit" — запустить (повтор продлевает), "!edit stop" — остановить
-    const editCommand = String(config.editCommand || "").trim().toLowerCase();
-    const [firstWord, secondWord] = message.trim().toLowerCase().split(/\s+/);
-    if (config.editEnabled && editCommand && firstWord === editCommand) {
-      if (!canTriggerEdit(tags)) {
-        console.log(`[EDIT] ${username} has no rights for ${editCommand}`);
-      } else if (secondWord === "stop" || secondWord === "стоп") {
-        await edit.stop(`остановил ${username}`);
-      } else {
-        await edit.start({ by: username }).catch(err => console.log(`[EDIT] ${username}: ${err.message}`));
-      }
-      return;
-    }
 
     const words = normalizeWords(message);
     const wordsLower = words.map(w => w.toLowerCase());

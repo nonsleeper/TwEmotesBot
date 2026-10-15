@@ -39,10 +39,9 @@ const KEY_TAB = {
   gameFontFamily: 'game', gameFontSize: 'game', gameBold: 'game', gameTextColor: 'game',
   gameOutlineColor: 'game', gameOutlineWidth: 'game', gameShadow: 'game',
   editEnabled: 'connection', moduleEmotes: 'connection', moduleGreetings: 'connection', moduleGame: 'connection',
-  obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editSources: 'edit',
-  editAudioSource: 'edit', editCommand: 'edit', editDuration: 'edit', editCooldown: 'edit', editWho: 'edit',
+  obsHost: 'edit', obsPort: 'edit', obsPassword: 'edit', editRewards: 'edit',
+  editAudioSource: 'edit',
   editIntensity: 'edit', editEffects: 'edit', editLatencyMs: 'edit', editAlwaysPunch: 'edit', editBoxPulse: 'edit', editBoxPulseAmount: 'edit',
-  editRewardEnabled: 'edit', editRewardTitle: 'edit', editRewardCost: 'edit', editRewardDuration: 'edit', editRewardBoost: 'edit',
 };
 
 const state = {
@@ -441,6 +440,7 @@ function readForm() {
   out.greetingEmotes = greetingPicker.get();
   out.emoteBlacklist = blacklistPicker.get();
   out.emoteExcludeZones = zoneEditor.get();
+  out.editRewards = rewardEditor.get();
   out.greetingAnimations = animPicker.get();
   for (const key of listKeys()) out[key] = listValues(key);
   return out;
@@ -457,7 +457,7 @@ function listValues(key) {
 function writeForm(cfg) {
   setFontValue(cfg.greetingFontFamily);
   setFontValue(cfg.gameFontFamily, 'gameFont');
-  renderEditSources(state.editVideo, cfg.editSources);
+  rewardEditor.set(cfg.editRewards);
   setSelectValue($('editAudio'), cfg.editAudioSource);
   for (const el of document.querySelectorAll('[data-list]')) {
     el.checked = Array.isArray(cfg[el.dataset.list]) && cfg[el.dataset.list].includes(el.value);
@@ -1498,31 +1498,133 @@ function fillSourceSelect(select, items, current) {
   setSelectValue(select, current);
 }
 
-// Источники видео для эдита — галочки (data-list="editSources"): видео из OBS плюс уже выбранные, даже если их
-// сейчас нет в OBS (переименовали, удалили) — чтобы сохранение не выбросило их молча
+// ---- награды за баллы для эдита: список, у каждой награды свои источники (поля без data-key — форму собирает этот
+// редактор). Источники — видео из OBS плюс уже выбранные, даже если их сейчас нет в OBS (переименовали, удалили),
+// чтобы сохранение не выбросило их молча
 state.editVideo = [];
-function selectedEditSources() {
-  return document.querySelector('[data-list="editSources"]')
-    ? listValues('editSources')
-    : ((state.saved && state.saved.editSources) || []);
-}
-function renderEditSources(available, selected) {
-  const chosen = new Set(selected || []);
-  const names = [...new Set([...(available || []), ...chosen])];
-  const box = $('editSourceList');
-  if (!names.length) {
-    box.replaceChildren(el('span', { style: 'color:var(--dim)', text: 'Нажмите «Обновить список из OBS»' }));
-    return;
+const rewardEditor = (() => {
+  let rewards = [];
+  let lastStatus = null;
+  const box = $('rewardList');
+  const copy = (list) => (Array.isArray(list) ? JSON.parse(JSON.stringify(list)) : []);
+  const changed = () => updateDirty();
+
+  function nextKey() {
+    for (let n = 1; ; n++) if (!rewards.some(r => r.key === `r${n}`)) return `r${n}`;
   }
-  box.replaceChildren(...names.map(name => {
-    const input = el('input', { type: 'checkbox', value: name });
-    input.dataset.list = 'editSources';
-    input.checked = chosen.has(name);
-    input.addEventListener('change', updateDirty);
-    const missing = (available || []).length && !available.includes(name);
-    return el('label', { class: 'check' }, [input, el('span', { class: missing ? 'missing' : '', text: missing ? `${name} (нет в OBS)` : name })]);
-  }));
-}
+
+  function sourcesBox(r) {
+    const names = [...new Set([...state.editVideo, ...r.sources])];
+    if (!names.length) return el('span', { style: 'color:var(--dim)', text: 'Нажмите «↻ Обновить список из OBS», чтобы выбрать источники' });
+    return el('div', { class: 'reward-sources' }, names.map(name => {
+      const input = el('input', { type: 'checkbox' });
+      input.checked = r.sources.includes(name);
+      input.addEventListener('change', () => {
+        r.sources = input.checked ? [...r.sources, name] : r.sources.filter(n => n !== name);
+        changed();
+      });
+      const missing = state.editVideo.length && !state.editVideo.includes(name);
+      return el('label', { class: 'check' }, [input, el('span', { class: missing ? 'missing' : '', text: missing ? `${name} (нет в OBS)` : name })]);
+    }));
+  }
+
+  function numInput(r, field, min, max, width) {
+    const input = el('input', { class: 'num', type: 'number', min, max, style: width ? `width:${width}px` : '' });
+    input.value = r[field];
+    input.addEventListener('input', () => { r[field] = input.value === '' ? null : Number(input.value); changed(); });
+    return input;
+  }
+
+  function item(r) {
+    const enabled = el('input', { type: 'checkbox' });
+    enabled.checked = r.enabled !== false;
+    const title = el('input', { class: 'input', maxlength: 45, style: 'width:220px', spellcheck: 'false' });
+    title.value = r.title;
+    title.addEventListener('input', () => { r.title = title.value; changed(); });
+    const node = el('div', { class: `reward-item${r.enabled === false ? ' off' : ''}` }, [
+      el('div', { class: 'reward-head' }, [
+        el('label', { class: 'check', style: 'align-items:center' }, [enabled, el('span', { text: 'Включена' })]),
+        title,
+        el('span', { text: 'цена' }), numInput(r, 'cost', 1, 10000000, 100), el('span', { text: 'баллов' }),
+        el('span', { class: 'grow' }),
+        el('button', { class: 'btn btn-sm', type: 'button', text: '▶ Тест 15 с', onclick: () => test(r) }),
+        el('button', { class: 'btn btn-sm btn-ghost', type: 'button', text: 'Удалить', onclick: () => remove(r) }),
+      ]),
+      el('div', { class: 'sentence', style: 'gap:8px 12px' }, [
+        el('span', { text: 'Эдит на' }), numInput(r, 'duration', 5, 600), el('span', { text: 'сек., каждая покупка во время эдита — ещё столько же и сила +' }),
+        numInput(r, 'boost', 0, 100), el('span', { text: '%' }), el('span', { style: 'color:var(--dim)', text: '(до ×2.5)' }),
+      ]),
+      sourcesBox(r),
+      el('div', { class: 'edit-row' }, [el('span', { text: 'На Twitch' }), el('b', { class: 'r-status', text: '—' })]),
+    ]);
+    node.dataset.key = r.key;
+    enabled.addEventListener('change', () => { r.enabled = enabled.checked; node.classList.toggle('off', !enabled.checked); changed(); });
+    return node;
+  }
+
+  function render() {
+    box.replaceChildren(...(rewards.length
+      ? rewards.map(item)
+      : [el('p', { class: 'desc', style: 'margin:12px 0 0', text: 'Наград пока нет — добавьте первую.' })]));
+    setStatus(lastStatus);
+  }
+
+  async function test(r) {
+    if (isDirty()) { toast('Сначала сохраните настройки — тест берёт сохранённую награду', 'err'); return; }
+    try {
+      await api('/api/edit/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: r.key, duration: 15 }) });
+      toast(`«${r.title}»: эдит на 15 секунд`, 'ok');
+    } catch (err) {
+      toast(`Эдит не запустился: ${err.message}`, 'err');
+    }
+  }
+
+  function remove(r) {
+    if (!confirm(`Удалить награду «${r.title}»? На канале она будет скрыта (совсем удалить её можно в панели Twitch).`)) return;
+    rewards = rewards.filter(x => x !== r);
+    render();
+    changed();
+  }
+
+  $('btnRewardAdd').addEventListener('click', () => {
+    if (rewards.length >= 10) { toast('Наград может быть не больше 10', 'err'); return; }
+    const n = rewards.length + 1;
+    rewards.push({ key: nextKey(), title: n > 1 ? `Эдит ${n}` : 'Эдит на вебке', cost: 5000, duration: 30, boost: 25, sources: [], enabled: true });
+    render();
+    changed();
+  });
+
+  // Статус каждой награды на Twitch (из /api/reward/state)
+  function setStatus(r) {
+    lastStatus = r;
+    const signedIn = Boolean(r && r.signedIn);
+    for (const node of box.querySelectorAll('.reward-item')) {
+      const out = node.querySelector('.r-status');
+      const server = r && (r.rewards || []).find(x => x.key === node.dataset.key);
+      let text = '—', color = '';
+      if (!r) text = 'бот не запущен';
+      else if (!signedIn) text = 'войдите в Twitch, чтобы бот создал награду';
+      else if (!server) text = 'не сохранена';
+      else if (server.error) { text = server.error; color = 'var(--err)'; }
+      else if (!server.enabled) text = 'выключена (скрыта на канале)';
+      else if (!server.twitch) text = 'настраиваю…';
+      else {
+        text = `«${server.twitch.title}», ${server.twitch.cost} баллов — ${server.twitch.paused ? 'на паузе: эдит сейчас не запустится' : r.listening ? 'активна' : 'подключаюсь…'}`;
+        color = server.twitch.paused ? 'var(--warn)' : r.listening ? 'var(--ok)' : '';
+      }
+      out.textContent = text;
+      out.style.color = color;
+    }
+  }
+
+  render();
+  return {
+    get: () => copy(rewards),
+    set(list) { rewards = copy(list); render(); },
+    refresh: render, // пришёл свежий список источников из OBS
+    setStatus,
+  };
+})();
 
 async function loadEditSources() {
   const hint = $('editSourcesHint');
@@ -1532,7 +1634,7 @@ async function loadEditSources() {
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || `HTTP ${res.status}`);
     state.editVideo = data.video.map(v => v.name);
-    renderEditSources(state.editVideo, selectedEditSources());
+    rewardEditor.refresh();
     fillSourceSelect($('editAudio'), data.audio, $('editAudio').value || (state.saved && state.saved.editAudioSource));
     hint.textContent = `В OBS: ${data.video.length} видео, ${data.audio.length} со звуком`;
     updateDirty();
@@ -1566,7 +1668,9 @@ async function pollEditState() {
       $('editBpm').textContent = s.bpm ? `${s.bpm} BPM${s.locked ? '' : ' ?'}` : (s.level == null ? 'нет звука' : 'ищу бит…');
       $('editBpm').title = s.locked ? 'темп найден, эффекты идут по сетке битов' : 'темп ещё не найден — эффекты идут по отдельным ударам';
       $('editBeat').style.opacity = s.beatPhase == null ? 0 : Math.max(0, 1 - s.beatPhase * 2.5);
-      $('editRun').textContent = s.running ? `идёт, осталось ${s.remaining} с${s.power > 1 ? ` · сила ×${s.power.toFixed(2)}` : ''}` : s.cooldown ? `отдыхает ${s.cooldown} с` : 'готов';
+      $('editRun').textContent = s.running
+        ? s.sessions.map(x => `«${x.title}» ${x.remaining} с${x.power > 1 ? ` ×${x.power.toFixed(2)}` : ''}`).join(', ')
+        : 'готов';
       $('editRun').style.color = s.running ? 'var(--ok)' : '';
     }
   } catch {}
@@ -1587,16 +1691,8 @@ function renderReward(r) {
     $('rewardCodeText').textContent = r.pending.code;
     $('rewardUri').href = r.pending.uri;
   }
-  let status = '—', color = '';
-  if (r && r.error) { status = r.error; color = 'var(--err)'; }
-  else if (r && signedIn && !r.enabled) status = 'выключена (скрыта на канале)';
-  else if (r && signedIn && r.reward) {
-    status = `«${r.reward.title}», ${r.reward.cost} баллов — ${r.reward.paused ? 'на паузе: эдит сейчас не запустится' : r.listening ? 'активна' : 'подключаюсь…'}`;
-    color = r.reward.paused ? 'var(--warn)' : r.listening ? 'var(--ok)' : '';
-  } else if (r && signedIn) status = 'настраиваю…';
-  else if (r) status = 'войдите в Twitch, чтобы бот создал награду';
-  $('rewardStatus').textContent = status;
-  $('rewardStatus').style.color = color;
+  $('rewardGlobalError').textContent = (r && r.error) || '';
+  rewardEditor.setStatus(r);
 }
 async function pollRewardState() {
   if (Date.now() - rewardPollAt < 1000) return;
@@ -1619,25 +1715,17 @@ $('btnRewardCancel').addEventListener('click', async () => {
   try { renderReward(await api('/api/reward/logout', { method: 'POST' })); } catch {}
 });
 $('btnRewardLogout').addEventListener('click', async () => {
-  if (!confirm('Выйти из Twitch? Награда на канале будет скрыта.')) return;
+  if (!confirm('Выйти из Twitch? Награды на канале будут скрыты.')) return;
   try {
     renderReward(await api('/api/reward/logout', { method: 'POST' }));
-    toast('Вы вышли из Twitch, награда скрыта', 'ok');
+    toast('Вы вышли из Twitch, награды скрыты', 'ok');
   } catch (err) {
     toast(err.message, 'err');
   }
 });
 
 $('btnEditSources').addEventListener('click', loadEditSources);
-$('btnEditTest').addEventListener('click', async () => {
-  try {
-    await api('/api/edit/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ duration: 15 }) });
-    toast('Эдит запущен на 15 секунд', 'ok');
-  } catch (err) {
-    toast(`Эдит не запустился: ${err.message}`, 'err');
-  }
-});
-$('btnEditStop').addEventListener('click', () => botAction('/api/edit/stop', 'Эдит остановлен'));
+$('btnEditStop').addEventListener('click', () => botAction('/api/edit/stop', 'Эдиты остановлены'));
 $('toggleObsPassword').addEventListener('click', () => {
   const input = $('obsPassword');
   input.type = input.type === 'password' ? 'text' : 'password';
