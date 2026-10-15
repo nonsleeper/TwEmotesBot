@@ -163,6 +163,8 @@ function sanitizeRewards(list) {
       duration: int(r.duration, 30, 5, 600),
       boost: int(r.boost, 25, 0, 100),
       sources: [...new Set((Array.isArray(r.sources) ? r.sources : []).filter(n => typeof n === "string" && n.trim()).map(n => n.slice(0, 200)))].slice(0, 20),
+      // текст для зрителей; пустой — бот поставит стандартный
+      prompt: (typeof r.prompt === "string" ? r.prompt.trim() : "").slice(0, 200),
       enabled: r.enabled !== false,
     });
   }

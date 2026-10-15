@@ -18,6 +18,7 @@ const REDEMPTION_EVENT = "channel.channel_points_custom_reward_redemption.add";
 const HTTP_TIMEOUT_MS = 15000;
 const CHECK_MS = 5000; // как часто проверять, может ли эдит запуститься (пауза награды) и не пора ли повторить синхронизацию
 const RETRY_SYNC_MS = 60000;
+// текст награды для зрителей, если в настройках он не задан (Twitch: до 200 символов)
 const REWARD_PROMPT = "Вебка стримера на время превращается в эдит под музыку. Повторная покупка продлевает и усиливает эффект.";
 
 class TwitchApiError extends Error {
@@ -171,6 +172,7 @@ class RewardManager extends EventEmitter {
         key: String(r.key),
         title: String(r.title || "").trim().slice(0, 45) || "Эдит на вебке",
         cost: Math.max(1, Math.round(Number(r.cost) || 5000)),
+        prompt: String(r.prompt || "").trim().slice(0, 200) || REWARD_PROMPT,
         enabled: cfg.editEnabled === true && r.enabled !== false,
       })),
     };
@@ -289,7 +291,7 @@ class RewardManager extends EventEmitter {
   }
 
   async ensureReward(r, manageable) {
-    const want = { title: r.title, cost: r.cost };
+    const want = { title: r.title, cost: r.cost, prompt: r.prompt };
     let reward = manageable.find(x => x.id === this.rewardIdOf(r.key)) || null;
     // награда могла остаться от прошлого входа — ищем свою по названию (но не занятую другой наградой из списка)
     const taken = new Set(Object.entries(this.auth.rewardIds).filter(([k]) => k !== r.key).map(([, id]) => id));
@@ -297,7 +299,7 @@ class RewardManager extends EventEmitter {
     if (!reward) {
       try {
         const data = await this.helix("POST", this.rewardsPath(), {
-          ...want, prompt: REWARD_PROMPT, is_enabled: true, background_color: "#9147FF", should_redemptions_skip_request_queue: false,
+          ...want, is_enabled: true, background_color: "#9147FF", should_redemptions_skip_request_queue: false,
         });
         reward = data.data[0];
         this.log(`[REWARD] Created reward "${reward.title}" (${reward.cost} points)`);
@@ -316,11 +318,12 @@ class RewardManager extends EventEmitter {
     const patch = {};
     if (reward.title !== want.title) patch.title = want.title;
     if (reward.cost !== want.cost) patch.cost = want.cost;
+    if ((reward.prompt || "") !== want.prompt) patch.prompt = want.prompt;
     if (!reward.is_enabled) patch.is_enabled = true;
     if (reward.should_redemptions_skip_request_queue) patch.should_redemptions_skip_request_queue = false; // иначе баллы не вернуть
     if (Object.keys(patch).length) {
       const updated = await this.updateReward(r.key, patch);
-      if (patch.title || patch.cost) this.log(`[REWARD] Reward updated: "${updated.title}", ${updated.cost} points`);
+      if (patch.title || patch.cost || patch.prompt) this.log(`[REWARD] Reward updated: "${updated.title}", ${updated.cost} points${patch.prompt ? ", new text" : ""}`);
     }
     return this.rewards.get(r.key);
   }

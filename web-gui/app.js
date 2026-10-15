@@ -1567,6 +1567,14 @@ const rewardEditor = (() => {
     const title = el('input', { class: 'input', maxlength: 45, style: 'width:220px', spellcheck: 'false' });
     title.value = r.title;
     title.addEventListener('input', () => { r.title = title.value; changed(); });
+    // текст награды, который зрители видят на Twitch под названием
+    const prompt = el('textarea', { class: 'input reward-prompt', maxlength: 200, rows: 2, spellcheck: 'true',
+      placeholder: `Пусто — стандартный текст: «Вебка стримера на время превращается в эдит под музыку. Повторная покупка продлевает и усиливает эффект.»` });
+    prompt.value = r.prompt || '';
+    const promptCount = el('span', { class: 'reward-prompt-count' });
+    const updatePromptCount = () => { promptCount.textContent = `${prompt.value.length} / 200`; };
+    updatePromptCount();
+    prompt.addEventListener('input', () => { r.prompt = prompt.value; updatePromptCount(); changed(); });
     const node = el('div', { class: `reward-item${r.enabled === false ? ' off' : ''}` }, [
       el('div', { class: 'reward-head' }, [
         el('label', { class: 'check', style: 'align-items:center' }, [enabled, el('span', { text: 'Включена' })]),
@@ -1575,6 +1583,10 @@ const rewardEditor = (() => {
         el('span', { class: 'grow' }),
         el('button', { class: 'btn btn-sm', type: 'button', text: '▶ Тест 15 с', onclick: () => test(r) }),
         el('button', { class: 'btn btn-sm btn-ghost', type: 'button', text: 'Удалить', onclick: () => remove(r) }),
+      ]),
+      el('div', { class: 'reward-prompt-box' }, [
+        el('div', { class: 'reward-sources-head' }, [el('span', { text: 'Текст для зрителей' }), promptCount]),
+        prompt,
       ]),
       el('div', { class: 'sentence', style: 'gap:8px 12px' }, [
         el('span', { text: 'Эдит на' }), numInput(r, 'duration', 5, 600), el('span', { text: 'сек., каждая покупка во время эдита — ещё столько же и сила +' }),
@@ -1615,7 +1627,7 @@ const rewardEditor = (() => {
   $('btnRewardAdd').addEventListener('click', () => {
     if (rewards.length >= 10) { toast('Наград может быть не больше 10', 'err'); return; }
     const n = rewards.length + 1;
-    rewards.push({ key: nextKey(), title: n > 1 ? `Эдит ${n}` : 'Эдит на вебке', cost: 5000, duration: 30, boost: 25, sources: [], enabled: true });
+    rewards.push({ key: nextKey(), title: n > 1 ? `Эдит ${n}` : 'Эдит на вебке', cost: 5000, duration: 30, boost: 25, sources: [], prompt: '', enabled: true });
     render();
     changed();
   });
