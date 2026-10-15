@@ -376,6 +376,22 @@ function scaleLook(look, k) {
   };
 }
 
+// Источник на время эдита — в режиме рамки OBS «растянуть по рамке» того же размера и на том же месте: внешне
+// ничего не меняется. Зачем: obs-websocket применяет положение/масштаб и обрезку двумя отдельными вызовами, и OBS
+// иногда рисует кадр между ними — новый масштаб со старой обрезкой, и на зум-ударе источник на кадр раздувался
+// и «ускакивал». В рамке размер на экране задаёт рамка, а обрезка — только какую часть картинки показать, так что
+// любой промежуточный кадр выглядит нормально. Возвращает T для расчёта эффектов и что отправить в OBS заранее.
+function editFrameOf(T0) {
+  if (T0.boundsType && T0.boundsType !== "OBS_BOUNDS_NONE") return { T: T0, prepare: null }; // уже в рамке
+  const Dw = (T0.sourceWidth - T0.cropLeft - T0.cropRight) * T0.scaleX;
+  const Dh = (T0.sourceHeight - T0.cropTop - T0.cropBottom) * T0.scaleY;
+  const prepare = {
+    boundsType: "OBS_BOUNDS_STRETCH", boundsAlignment: 0, boundsWidth: Math.abs(Dw), boundsHeight: Math.abs(Dh),
+    scaleX: T0.scaleX < 0 ? -1 : 1, scaleY: T0.scaleY < 0 ? -1 : 1,
+  };
+  return { T: { ...T0, ...prepare }, prepare };
+}
+
 // Эффект → настройки элемента сцены. Зум и тряска — через обрезку (кадр «наезжает» внутри той же рамки:
 // масштаб растёт ровно настолько, насколько уменьшилась видимая часть), наклон — поворот вокруг центра рамки,
 // пульс рамки — сама рамка больше/меньше вокруг центра, отражение — отрицательный масштаб, центр тот же.
@@ -404,11 +420,11 @@ function buildTransform(T, look) {
   if (bounded) {
     Dw = T.boundsWidth;
     Dh = T.boundsHeight; // в рамке OBS сам растягивает обрезанное до прежнего размера
-    if (box !== 1) {
-      out.boundsWidth = T.boundsWidth * box;
-      out.boundsHeight = T.boundsHeight * box;
-    }
-    if (flip < 0) out.scaleX = -T.scaleX;
+    // каждый кадр целиком: иначе после пульса/отражения рамка так и оставалась бы большой/зеркальной
+    out.boundsWidth = T.boundsWidth * box;
+    out.boundsHeight = T.boundsHeight * box;
+    out.scaleX = T.scaleX * flip;
+    out.scaleY = T.scaleY;
   } else {
     out.scaleX = T.scaleX * (w0 / (W - out.cropLeft - out.cropRight)) * box * flip;
     out.scaleY = T.scaleY * (h0 / (H - out.cropTop - out.cropBottom)) * box;
@@ -416,7 +432,9 @@ function buildTransform(T, look) {
     Dh = h0 * T.scaleY;
   }
   const geo = centerOf(T, Dw, Dh);                  // центр исходной рамки — он остаётся на месте
-  const grown = centerOf(T, Dw * box * flip, Dh * box); // вектор от точки привязки до центра для новой рамки
+  // вектор от точки привязки до центра для новой рамки; в режиме рамки OBS зеркалит картинку внутри неё и саму рамку
+  // не двигает, без рамки — отражает вокруг точки привязки
+  const grown = centerOf(T, Dw * box * (bounded ? 1 : flip), Dh * box);
   const rotation = T.rotation + (look.tilt || 0);
   const r = (rotation * Math.PI) / 180;
   out.rotation = rotation;
@@ -656,8 +674,11 @@ class EditController {
 
   // Возврат источника как было: положение/масштаб/обрезка и фильтры — нейтральные и выключенные
   restoreRequests(target) {
+    const o = target.original;
+    const crop = { cropLeft: o.cropLeft, cropRight: o.cropRight, cropTop: o.cropTop, cropBottom: o.cropBottom };
     return [
-      { requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: target.original } },
+      { requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: crop } },
+      { requestType: "SetSceneItemTransform", requestData: { ...target.item, sceneItemTransform: o } },
       ...this.filterRequests(target.source, target.filters, false),
     ];
   }
@@ -705,20 +726,27 @@ class EditController {
       if (this.targets.has(source)) { shared.push(source); continue; }
       const item = await this.findSceneItem(source);
       if (!item) { missing.push(source); continue; }
-      const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", item);
+      const { sceneItemTransform: T0 } = await this.obs.request("GetSceneItemTransform", item);
       const original = {
-        positionX: T.positionX, positionY: T.positionY, rotation: T.rotation, scaleX: T.scaleX, scaleY: T.scaleY,
-        cropLeft: T.cropLeft, cropRight: T.cropRight, cropTop: T.cropTop, cropBottom: T.cropBottom,
-        ...(T.boundsType && T.boundsType !== "OBS_BOUNDS_NONE" ? { boundsWidth: T.boundsWidth, boundsHeight: T.boundsHeight } : {}),
+        positionX: T0.positionX, positionY: T0.positionY, rotation: T0.rotation, scaleX: T0.scaleX, scaleY: T0.scaleY,
+        cropLeft: T0.cropLeft, cropRight: T0.cropRight, cropTop: T0.cropTop, cropBottom: T0.cropBottom,
+        boundsType: T0.boundsType || "OBS_BOUNDS_NONE", boundsAlignment: T0.boundsAlignment || 0,
+        ...(T0.boundsType && T0.boundsType !== "OBS_BOUNDS_NONE" ? { boundsWidth: T0.boundsWidth, boundsHeight: T0.boundsHeight } : {}),
       };
-      fresh.push({ source, item, T, original, filters, keys: new Set(), lastColor: null, lastLutKey: null, lastSharp: null });
+      const { T, prepare } = editFrameOf(T0);
+      fresh.push({ source, item, T, original, prepare, filters, keys: new Set(), lastColor: null, lastLutKey: null, lastSharp: null });
     }
     if (!fresh.length && !shared.length) {
       throw new Error(missing.length > 1 ? `Источников ${missing.map(n => `«${n}»`).join(", ")} нет в текущей сцене OBS` : `Источника «${missing[0]}» нет в текущей сцене OBS`);
     }
     if (missing.length) this.log(`[EDIT] "${title}": not in the current scene, skipped: ${missing.join(", ")}`);
     for (const t of fresh) await this.ensureFilters(t.source, filters);
-    if (fresh.length) await this.obs.batch(fresh.flatMap(t => this.filterRequests(t.source, filters, true)));
+    if (fresh.length) {
+      await this.obs.batch(fresh.flatMap(t => [
+        ...(t.prepare ? [{ requestType: "SetSceneItemTransform", requestData: { ...t.item, sceneItemTransform: t.prepare } }] : []),
+        ...this.filterRequests(t.source, filters, true),
+      ]));
+    }
 
     if (!this.targets.size) this.fx = { beat: null, effect: "punch", dir: 1, seed: Math.random(), startedAt: Date.now() };
     for (const t of fresh) this.targets.set(t.source, t);
@@ -793,7 +821,7 @@ class EditController {
       for (const t of targets) {
         if (this.targets.has(t.source)) continue; // его уже снова взял новый эдит
         const { sceneItemTransform: T } = await this.obs.request("GetSceneItemTransform", t.item);
-        const off = Object.keys(t.original).filter(k => Math.abs((T[k] ?? 0) - t.original[k]) > 0.01);
+        const off = Object.keys(t.original).filter(k => typeof t.original[k] === "number" ? Math.abs((T[k] ?? 0) - t.original[k]) > 0.01 : T[k] !== t.original[k]);
         const lit = [];
         for (const key of t.filters) {
           const f = await this.obs.request("GetSourceFilter", { sourceName: t.source, filterName: FILTERS[key].name }).catch(() => null);
@@ -907,4 +935,4 @@ class EditController {
   }
 }
 
-module.exports = { migrateEditConfig, EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };
+module.exports = { editFrameOf, migrateEditConfig, EditController, BeatTracker, EFFECT_KEYS, buildTransform, centerOf, colorSettings, scaleLook, EFFECTS, LUTS, writeLuts, beatRandom };
