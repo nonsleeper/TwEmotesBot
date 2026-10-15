@@ -388,8 +388,12 @@
     .reward-item.off { opacity: .7; }
     .reward-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .reward-head .grow { flex: 1; }
-    .reward-sources { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+    .reward-sources-box { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+    .reward-sources-head { display: flex; gap: 10px; align-items: baseline; color: var(--muted); }
+    .reward-sources-count { color: var(--dim); font-size: 12px; }
     .reward-sources .missing { color: var(--warn); }
+    .reward-sources .check[hidden], .reward-sources-empty[hidden] { display: none; }
+    .reward-sources-empty { color: var(--dim); }
     .reward-login { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 12px; }
     .reward-code { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: rgba(145, 71, 255, .12); }
     .reward-code[hidden] { display: none; }

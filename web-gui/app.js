@@ -1513,19 +1513,45 @@ const rewardEditor = (() => {
     for (let n = 1; ; n++) if (!rewards.some(r => r.key === `r${n}`)) return `r${n}`;
   }
 
+  // Источники награды: строка поиска и список с галочками (отмеченные — сверху)
   function sourcesBox(r) {
-    const names = [...new Set([...state.editVideo, ...r.sources])];
-    if (!names.length) return el('span', { style: 'color:var(--dim)', text: 'Нажмите «↻ Обновить список из OBS», чтобы выбрать источники' });
-    return el('div', { class: 'reward-sources' }, names.map(name => {
+    const names = [...new Set([...r.sources, ...state.editVideo])];
+    const count = el('span', { class: 'reward-sources-count' });
+    const updateCount = () => { count.textContent = r.sources.length ? `выбрано: ${r.sources.length}` : 'источники не выбраны'; };
+    updateCount();
+    const search = el('input', { class: 'input', type: 'search', placeholder: 'Поиск источника…', spellcheck: 'false' });
+    const empty = el('div', { class: 'reward-sources-empty', text: names.length ? 'Ничего не найдено' : 'Нажмите «↻ Обновить список из OBS», чтобы выбрать источники' });
+    const rows = names.map(name => {
       const input = el('input', { type: 'checkbox' });
       input.checked = r.sources.includes(name);
       input.addEventListener('change', () => {
         r.sources = input.checked ? [...r.sources, name] : r.sources.filter(n => n !== name);
+        updateCount();
         changed();
       });
       const missing = state.editVideo.length && !state.editVideo.includes(name);
-      return el('label', { class: 'check' }, [input, el('span', { class: missing ? 'missing' : '', text: missing ? `${name} (нет в OBS)` : name })]);
-    }));
+      const row = el('label', { class: 'check' }, [input, el('span', { class: missing ? 'missing' : '', text: missing ? `${name} (нет в OBS)` : name })]);
+      row.dataset.name = name.toLowerCase();
+      return row;
+    });
+    const list = el('div', { class: 'source-list reward-sources' }, [...rows, empty]);
+    const filter = () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      for (const row of rows) {
+        const visible = !q || row.dataset.name.includes(q);
+        row.hidden = !visible;
+        if (visible) shown++;
+      }
+      empty.hidden = shown > 0;
+    };
+    search.addEventListener('input', filter);
+    filter();
+    return el('div', { class: 'reward-sources-box' }, [
+      el('div', { class: 'reward-sources-head' }, [el('span', { text: 'Источники' }), count]),
+      search,
+      list,
+    ]);
   }
 
   function numInput(r, field, min, max, width) {
